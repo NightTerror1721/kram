@@ -23,6 +23,8 @@ namespace kram
 	typedef std::int64_t Int64;
 
 	typedef std::size_t Size;
+
+	typedef UInt64 Register;
 }
 
 namespace kram::types

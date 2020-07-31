@@ -11,14 +11,11 @@ namespace kram::runtime
 	struct RuntimeStack;
 	struct RuntimeState;
 
-	typedef UInt64 Register;
-
 	typedef UInt16 InstructionOffset;
 	typedef UInt8 RegisterOffset;
 	typedef Size ChunkOffset;
 
 	typedef std::byte StackUnit;
-	typedef std::byte* StackData;
 
 	enum class ErrorCode
 	{
@@ -31,7 +28,8 @@ namespace kram::runtime
 
 	struct CallInfo
 	{
-		InstructionOffset returnInstruction;
+		op::inst::Instruction* inst;
+		op::inst::Instruction* lastInst;
 		RegisterOffset returnRegister;
 		bin::Chunk* chunk;
 
@@ -48,13 +46,15 @@ namespace kram::runtime
 		CallInfo* top;
 
 		bool push(RuntimeState* state, RegisterOffset registerToReturn);
+		bool pushFirst(RuntimeState* state);
 		bool pop(RuntimeState* state);
 	};
 
 	struct RuntimeStack
 	{
 		Size size;
-		StackData base;
+		StackUnit* roof;
+		StackUnit* base;
 
 		StackUnit* top;
 		StackUnit* data;
@@ -70,12 +70,14 @@ namespace kram::runtime
 		RuntimeStack* rstack;
 		CallStack* cstack;
 		bin::Chunk** chunk;
-		InstructionOffset* inst;
+		op::inst::Instruction** inst;
+		op::inst::Instruction** lastInst;
 		ErrorCode error;
 
-		RuntimeState(RuntimeStack* rstack, CallStack* cstack, bin::Chunk** chunk, InstructionOffset* inst);
+		RuntimeState(RuntimeStack* rstack, CallStack* cstack, bin::Chunk** chunk, op::inst::Instruction** inst, op::inst::Instruction** lastInst);
 
 		void set(CallInfo* info);
+		void set(bin::Chunk* chunk);
 	};
 
 	void execute(RuntimeStack* rstack, CallStack* cstack, bin::Chunk* chunk);

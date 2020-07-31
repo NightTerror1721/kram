@@ -143,6 +143,11 @@ namespace kram::bin
 	struct Constant
 	{
 		const DataType* type;
+		union
+		{
+			Register value;
+			void* dataPointer;
+		};
 		Size size;
 		void* data;
 	};
@@ -152,7 +157,10 @@ namespace kram::bin
 		Size size;
 		void* data;
 
-		Size parameterCount;
+		UInt8 parameterCount;
+		UInt8 variableCount;
+		Size dataByteCount;
+
 		const DataType** parameterTypes;
 		const DataType* returnType;
 

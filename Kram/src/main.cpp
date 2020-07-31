@@ -9,8 +9,6 @@ int main(int argc, char** argv)
 	*value = 50;
 	state.free(value);
 
-	int val = kram::op::inst::NOP;
-
 
 	return 0;
 }

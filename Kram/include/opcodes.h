@@ -4,7 +4,7 @@
 
 namespace kram::op::inst
 {
-	enum Instruction : UInt8
+	enum class Instruction : UInt8
 	{
 		NOP = 0x00,
 
@@ -22,5 +22,9 @@ namespace kram::op::inst
 		MOV_C_DC, //Move constant to direction in constant
 		MOV_DR_DC, //Move register direction to direction in constant
 		MOV_DC_DC, //Move constant direction to direction in constant
+
+
+
+		RET, //Empty return
 	};
 }
