@@ -8,7 +8,8 @@ namespace kram::runtime
 {
 	struct CallInfo;
 	struct CallStack;
-	struct RuntimeStack;
+	struct RegisterStack;
+	struct AutodataStack;
 	struct RuntimeState;
 
 	typedef UInt16 InstructionOffset;
@@ -30,12 +31,13 @@ namespace kram::runtime
 	{
 		op::inst::Instruction* inst;
 		op::inst::Instruction* lastInst;
-		RegisterOffset returnRegister;
 		bin::Chunk* chunk;
 
-		StackUnit* top;
-		StackUnit* data;
-		StackUnit* bottom;
+		StackUnit* regsTop;
+		StackUnit* regsBottom;
+
+		StackUnit* dataTop;
+		StackUnit* dataBottom;
 	};
 
 	struct CallStack
@@ -45,19 +47,16 @@ namespace kram::runtime
 
 		CallInfo* top;
 
-		bool push(RuntimeState* state, RegisterOffset registerToReturn);
-		bool pushFirst(RuntimeState* state);
+		bool push(RuntimeState* state);
 		bool pop(RuntimeState* state);
 	};
 
-	struct RuntimeStack
+	struct RegisterStack
 	{
-		Size size;
 		StackUnit* roof;
 		StackUnit* base;
 
 		StackUnit* top;
-		StackUnit* data;
 		union
 		{
 			Register* registers;
@@ -65,22 +64,33 @@ namespace kram::runtime
 		};
 	};
 
+	struct AutodataStack
+	{
+		StackUnit* roof;
+		StackUnit* base;
+
+		StackUnit* top;
+		StackUnit* bottom;
+	};
+
 	struct RuntimeState
 	{
-		RuntimeStack* rstack;
+		RegisterStack* rstack;
+		AutodataStack* dstack;
 		CallStack* cstack;
 		bin::Chunk** chunk;
 		op::inst::Instruction** inst;
 		op::inst::Instruction** lastInst;
 		ErrorCode error;
 
-		RuntimeState(RuntimeStack* rstack, CallStack* cstack, bin::Chunk** chunk, op::inst::Instruction** inst, op::inst::Instruction** lastInst);
+		RuntimeState(RegisterStack* rstack, AutodataStack* dstack, CallStack* cstack,
+			bin::Chunk** chunk, op::inst::Instruction** inst, op::inst::Instruction** lastInst);
 
 		void set(CallInfo* info);
-		void set(bin::Chunk* chunk);
+		void set(bin::Chunk* chunk, RegisterOffset firstRegister);
 	};
 
-	void execute(RuntimeStack* rstack, CallStack* cstack, bin::Chunk* chunk);
+	void execute(RegisterStack* rstack, AutodataStack* dstack, CallStack* cstack, bin::Chunk* chunk);
 }
 
 

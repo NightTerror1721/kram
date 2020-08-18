@@ -140,7 +140,7 @@ namespace kram::bin
 
 namespace kram::bin
 {
-	struct Constant
+	struct StaticValue
 	{
 		const DataType* type;
 		union
@@ -159,18 +159,18 @@ namespace kram::bin
 
 		UInt8 parameterCount;
 		UInt8 variableCount;
-		Size dataByteCount;
+		Size autodataCount;
 
 		const DataType** parameterTypes;
 		const DataType* returnType;
 
 		Size typeCount;
-		Size constantCount;
+		Size staticCount;
 		Size childChunkCount;
 		UInt16 codeSize;
 		
 		const DataType* types;
-		const Constant* constants;
+		StaticValue* statics;
 		Chunk* childChunks;
 		void* code;
 	};
