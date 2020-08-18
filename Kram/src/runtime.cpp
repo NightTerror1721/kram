@@ -1,315 +1,237 @@
 #include "runtime.h"
 
+#define rcast(_Type, _Value) reinterpret_cast<_Type>(_Value)
+
 using namespace kram::bin;
 using kram::op::inst::Instruction;
 
 namespace kram::runtime
 {
-	bool CallStack::push(RuntimeState* state)
-	{
-		RegisterStack* rstack = state->rstack;
-
-		CallInfo* info = top + 1;
-		if (info >= roof)
-		{
-			state->error = ErrorCode::CallStack_Overflow;
-			return false;
-		}
-
-		info->inst = *state->inst;
-		info->lastInst = *state->lastInst;
-		info->chunk = *state->chunk;
-
-		info->regsTop = rstack->top;
-		info->regsBottom = rstack->bottom;
-
-		info->dataTop = state->dstack->top;
-		info->dataBottom = state->dstack->bottom;
-
-		return top = info, true;
-	}
-
-	bool CallStack::pop(RuntimeState* state)
-	{
-		if (top < base)
-		{
-			state->error = ErrorCode::CallStack_Empty;
-			return false;
-		}
-
-		return --top, true;
-	}
-
-
-	RuntimeState::RuntimeState(RegisterStack* rstack, AutodataStack* dstack, CallStack* cstack, Chunk** chunk, Instruction** inst, op::inst::Instruction** lastInst) :
-		rstack{ rstack },
-		dstack{ dstack },
-		cstack{ cstack },
-		chunk{ chunk },
-		inst{ inst },
-		lastInst{ lastInst },
+	RuntimeState::RuntimeState(Stack* stack) :
+		stack{ stack },
+		chunk{ nullptr },
+		inst{ nullptr },
+		lastInst{ nullptr },
+		exit{ false },
 		error{ ErrorCode::OK }
 	{}
 
-	void RuntimeState::set(CallInfo* info)
+	static void main_chunk_call(RuntimeState* state, Chunk* chunk)
 	{
-		rstack->top = info->regsTop;
-		rstack->bottom = info->regsBottom;
+		Stack* stack = state->stack;
+		CallInfo* info = rcast(CallInfo*, stack->top);
 
-		dstack->top = info->dataTop;
-		dstack->bottom = info->dataBottom;
+		info->inst = nullptr;
+		info->lastInst = nullptr;
+		info->chunk = nullptr;
 
-		*chunk = info->chunk;
-		*inst = info->inst;
-		*lastInst = info->lastInst;
+		info->top = stack->top;
+		info->regs = stack->regs;
+		info->data = stack->data;
+
+		info->returnRegisterOffset = 0;
+
+
+		stack->data = rcast(StackUnit*, info + 1);
+		stack->regs = rcast(Register*, stack->regs + chunk->stackSize);
+		stack->top = rcast(StackUnit*, stack->data + chunk->registerCount);
+
+		state->chunk = chunk;
+		state->inst = rcast(Instruction*, chunk->code);
+		state->lastInst = rcast(Instruction*, chunk->code) + (chunk->codeSize - 1);
 	}
 
-	void RuntimeState::set(Chunk* newChunk, RegisterOffset firstRegister)
+	static void call_chunk(RuntimeState* state, ChunkOffset chunkOffset, DataOffset dataOffset, Size dataSize, RegisterOffset retRegOffset)
 	{
-		rstack->bottom = reinterpret_cast<StackUnit*>(rstack->registers + firstRegister);
-		rstack->top = rstack->bottom + (static_cast<Size>(newChunk->parameterCount) + newChunk->variableCount);
+		Stack* stack = state->stack;
+		Chunk* chunk = state->chunk->childChunks + chunkOffset;
+		CallInfo* info = rcast(CallInfo*, stack->top);
 
-		dstack->bottom = dstack->top;
-		dstack->top += newChunk->autodataCount;
+		info->inst = state->inst;
+		info->lastInst = state->lastInst;
+		info->chunk = state->chunk;
 
-		*chunk = newChunk;
-		*inst = reinterpret_cast<Instruction*>(newChunk->code);
-		*lastInst = reinterpret_cast<Instruction*>(newChunk->code) + (newChunk->codeSize - 1);
+		info->top = stack->top;
+		info->regs = stack->regs;
+		info->data = stack->data;
+
+		info->returnRegisterOffset = retRegOffset;
+
+
+		stack->data = rcast(StackUnit*, info + 1);
+		stack->regs = rcast(Register*, stack->regs + chunk->stackSize);
+		stack->top = rcast(StackUnit*, stack->data + chunk->registerCount);
+
+		state->chunk = chunk;
+		state->inst = rcast(Instruction*, chunk->code);
+		state->lastInst = rcast(Instruction*, chunk->code) + (chunk->codeSize - 1);
+
+
+		std::memcpy(stack->data, info->data + dataOffset, dataSize);
 	}
 
-	static void init_call(RuntimeState* state, ChunkOffset chunkOffset, RegisterOffset firstRegister)
+	static void finish_call(RuntimeState* state, RegisterOffset retRegOffset)
 	{
-		state->cstack->push(state);
-		state->set((*state->chunk)->childChunks + chunkOffset, firstRegister);
-	}
+		Stack* stack = state->stack;
+		CallInfo* info = stack->cinfo;
+		auto rr = stack->regs[retRegOffset].reg;
+		
+		stack->top = info->top;
+		stack->regs = info->regs;
+		stack->data = info->data;
+		stack->cinfo = rcast(CallInfo*, stack->data) - 1;
 
-	static void finish_call(RuntimeState* state, Register returnedValue)
-	{
-		state->rstack->registers[0] = returnedValue;
+		state->chunk = info->chunk;
+		state->inst = info->inst;
+		state->lastInst = info->lastInst;
 
-		CallInfo* info = state->cstack->top;
-		state->set(info);
-		state->cstack->pop(state);
+		if(!(state->exit = !state->inst))
+			stack->regs[info->returnRegisterOffset].reg = rr;
 	}
 }
 
-#define move_pc(_Amount) inst += (_Amount)
+#define move_pc(_Amount) (state.inst += (_Amount))
 #define opcode(_Inst) case _Inst : {
-#define end_opcode(_Amount) move_pc(_Amount); } break
+#define end_opcode() } break
+#define move_break(_Amount) move_pc(_Amount); break
 
-#define __reg(_Inst, _Part) (rstack->registers[(_Inst)-> ## _Part])
-#define __stc(_Inst, _Part) (chunk->statics[(_Inst)-> ## _Part].value)
-#define __is_static(_Inst, _Part) ((_Inst)->features.static_ ## _Part)
+#define register(_Idx) state.stack->regs[_Idx]
 
-#define reg_stc(_Inst, _Part) (__is_static(_Inst, _Part) ? __reg(_Inst, _Part) : __stc(_Inst, _Part))
-#define get_in_addr_reg_stc(_Inst, _Part, _Delta) \
-	(*reinterpret_cast<Register*>(reinterpret_cast<char*>(reg_stc(_Inst, _Part)) + (_Delta)))
-#define set_in_addr_reg_stc(_Inst, _Part, _Delta, _Value) (get_in_addr_reg_stc(_Inst, _Part, _Delta) = (_Value))
+#define scast(_Type, _Value) static_cast<_Type>(_Value)
 
-#define bx(_Inst) INSTRUCTION_BX_GET((_Inst)->Bx)
+#define arg_byte(_Idx) (rcast(UInt8*, state.inst)[_Idx])
+#define arg_word(_Idx) (*rcast(UInt16*, state.inst + (_Idx)))
+#define arg_dword(_Idx) (*rcast(UInt32*, state.inst + (_Idx)))
+#define arg_qword(_Idx) (*rcast(UInt64*, state.inst + (_Idx)))
 
-#define SBYTE(_Value) static_cast<kram::Int8>(_Value)
-#define SWORD(_Value) static_cast<kram::Int16>(_Value)
-#define SLONG(_Value) static_cast<kram::Int32>(_Value)
-#define SQUAD(_Value) static_cast<kram::Int64>(_Value)
-#define UBYTE(_Value) static_cast<kram::UInt8>(_Value)
-#define UWORD(_Value) static_cast<kram::UInt16>(_Value)
-#define ULONG(_Value) static_cast<kram::UInt32>(_Value)
-#define UQUAD(_Value) static_cast<kram::UInt64>(_Value)
+#define arg_sbyte(_Idx) (*rcast(Int8*, state.inst + (_Idx)))
+#define arg_sword(_Idx) (*rcast(Int16*, state.inst + (_Idx)))
+#define arg_sdword(_Idx) (*rcast(Int32*, state.inst + (_Idx)))
+#define arg_sqword(_Idx) (*rcast(Int64*, state.inst + (_Idx)))
 
-#define as_float(_Value) *reinterpret_cast<float*>(&(_Value))
-#define as_double(_Value) *reinterpret_cast<double*>(&(_Value))
-
-#define get_double_reg_stc(_Inst, _Part) (__is_static(_Inst, _Part) ? as_double(__reg(_Inst, _Part)) : as_double(__stc(_Inst, _Part)))
-#define get_float_reg_stc(_Inst, _Part) static_cast<float>(get_double_reg_stc(_Inst, _Part))
+#define arg_1bit(_Idx, _BitIdx) ((arg_byte(_Idx) >> (_BitIdx)) & 0x01U)
+#define arg_2bits(_Idx, _BitIdx) ((arg_byte(_Idx) >> (_BitIdx)) & 0x03U)
+#define arg_3bits(_Idx, _BitIdx) ((arg_byte(_Idx) >> (_BitIdx)) & 0x07U)
+#define arg_4bits(_Idx, _BitIdx) ((arg_byte(_Idx) >> (_BitIdx)) & 0x0FU)
+#define arg_5bits(_Idx, _BitIdx) ((arg_byte(_Idx) >> (_BitIdx)) & 0x1FU)
+#define arg_6bits(_Idx, _BitIdx) ((arg_byte(_Idx) >> (_BitIdx)) & 0x3FU)
+#define arg_7bits(_Idx, _BitIdx) ((arg_byte(_Idx) >> (_BitIdx)) & 0x7FU)
 
 
-#define set_float_reg_stc(_Inst, _Part, _Value) (get_double_reg_stc(_Inst, _Part) = static_cast<double>(_Value))
-#define set_double_reg_stc(_Inst, _Part, _Value) (get_double_reg_stc(_Inst, _Part) = (_Value))
-
-#define u_binary_op(_Op, _Type) reg_stc(fabc, A) = static_cast<_Type>(reg_stc(fabc, B) _Op reg_stc(fabc, C))
-#define s_binary_op(_Op, _Type) reg_stc(fabc, A) = static_cast<_Type>(UQUAD(reg_stc(fabc, B)) _Op UQUAD(reg_stc(fabc, C)))
-#define binary_op(_Op) switch (fabc->features.data_size) { \
-	case op::data::DataSize::UByte: u_binary_op(_Op, UInt8); break; \
-	case op::data::DataSize::UWord: u_binary_op(_Op, UInt16); break; \
-	case op::data::DataSize::ULong: u_binary_op(_Op, UInt32); break; \
-	case op::data::DataSize::UQuad: u_binary_op(_Op, UInt64); break; \
-	case op::data::DataSize::SByte: u_binary_op(_Op, Int8); break; \
-	case op::data::DataSize::SWord: u_binary_op(_Op, Int16); break; \
-	case op::data::DataSize::SLong: u_binary_op(_Op, Int32); break; \
-	case op::data::DataSize::SQuad: u_binary_op(_Op, Int64); break; \
-}
-
-#define __pre_unary_op(_Op, _Type) reg_stc(fabc, A) = static_cast<_Type>(_Op(reg_stc(fabc, B)))
-#define pre_unary_op(_Op) switch (fabc->features.data_size) { \
-	case op::data::DataSize::UByte: __pre_unary_op(_Op, UInt8); break; \
-	case op::data::DataSize::UWord: __pre_unary_op(_Op, UInt16); break; \
-	case op::data::DataSize::ULong: __pre_unary_op(_Op, UInt32); break; \
-	case op::data::DataSize::UQuad: __pre_unary_op(_Op, UInt64); break; \
-	case op::data::DataSize::SByte: __pre_unary_op(_Op, Int8); break; \
-	case op::data::DataSize::SWord: __pre_unary_op(_Op, Int16); break; \
-	case op::data::DataSize::SLong: __pre_unary_op(_Op, Int32); break; \
-	case op::data::DataSize::SQuad: __pre_unary_op(_Op, Int64); break; \
-}
-
-#define __post_unary_op(_Op, _Type) reg_stc(fabc, A) = static_cast<_Type>((reg_stc(fabc, B))_Op)
-#define post_unary_op(_Op) switch (fabc->features.data_size) { \
-	case op::data::DataSize::UByte: __post_unary_op(_Op, UInt8); break; \
-	case op::data::DataSize::UWord: __post_unary_op(_Op, UInt16); break; \
-	case op::data::DataSize::ULong: __post_unary_op(_Op, UInt32); break; \
-	case op::data::DataSize::UQuad: __post_unary_op(_Op, UInt64); break; \
-	case op::data::DataSize::SByte: __post_unary_op(_Op, Int8); break; \
-	case op::data::DataSize::SWord: __post_unary_op(_Op, Int16); break; \
-	case op::data::DataSize::SLong: __post_unary_op(_Op, Int32); break; \
-	case op::data::DataSize::SQuad: __post_unary_op(_Op, Int64); break; \
-}
-
-
-
-#define fab reinterpret_cast<kram::op::data::FAB_Instruction*>(inst)
-#define fabc reinterpret_cast<kram::op::data::FABC_Instruction*>(inst)
-#define fabx reinterpret_cast<kram::op::data::FABx_Instruction*>(inst)
-#define fabxc reinterpret_cast<kram::op::data::FABxC_Instruction*>(inst)
-
-#define end_empty() end_opcode(sizeof(kram::op::data::EmptyInstruction))
-#define end_fab() end_opcode(sizeof(kram::op::data::FAB_Instruction))
-#define end_fabc() end_opcode(sizeof(kram::op::data::FABC_Instruction))
-#define end_fabx() end_opcode(sizeof(kram::op::data::FABx_Instruction))
-#define end_fabxc() end_opcode(sizeof(kram::op::data::FABxC_Instruction))
-
-void kram::runtime::execute(RegisterStack* rstack, AutodataStack* dstack, CallStack* cstack, bin::Chunk* chunk)
+void kram::runtime::execute(Stack* stack, Chunk* chunk)
 {
-	using kram::op::data::DataSize;
+	RuntimeState state{ stack };
+	main_chunk_call(&state, chunk);
 
-	Instruction* inst = reinterpret_cast<Instruction*>(chunk->code);
-	Instruction* lastInst = reinterpret_cast<Instruction*>(chunk->code) + (chunk->codeSize - 1);
-	RuntimeState state{ rstack, dstack, cstack, &chunk, &inst, &lastInst };
-	cstack->push(&state);
-
-	for (;inst <= lastInst;)
+	for (;state.inst <= state.lastInst;)
 	{
-		switch (*inst)
+		switch (*state.inst)
 		{
 			opcode(Instruction::NOP)
-			end_empty();
-
+				move_pc(1);
+			end_opcode();
 
 			opcode(Instruction::MOV)
-				reg_stc(fab, A) = reg_stc(fab, B);
-			end_fab();
-
-
-			opcode(Instruction::PUT)
-				reg_stc(fabx, A) = bx(fabx);
-			end_fabx();
-
-
-			opcode(Instruction::LD_S)
-				reg_stc(fabx, A) = chunk->statics[bx(fabx)].value;
-			end_fabx();
-
-			opcode(Instruction::ST_S)
-				chunk->statics[bx(fabx)].value = reg_stc(fabx, A);
-			end_fabx();
-
-
-			opcode(Instruction::LD_D)
-				reg_stc(fabxc, A) = get_in_addr_reg_stc(fabxc, C, bx(fabxc));
-			end_fabxc();
-
-			opcode(Instruction::ST_D)
-				set_in_addr_reg_stc(fabxc, A, bx(fabxc), reg_stc(fabxc, C));
-			end_fabxc();
-
-
-			opcode(Instruction::LD_RD)
-				reg_stc(fab, A) = reinterpret_cast<Register>(&rstack->registers[fab->B]);
-			end_fab();
-
-			opcode(Instruction::LD_SD)
-				reg_stc(fabx, A) = reinterpret_cast<Register>(&chunk->statics[bx(fabx)].value);
-			end_fabx();
-
-			opcode(Instruction::LD_AD)
-				reg_stc(fabx, A) = reinterpret_cast<Register>(dstack->bottom + bx(fabx));
-			end_fabx();
-
-
-			opcode(Instruction::I2I)
-				switch (fab->features.data_size)
+				switch (arg_2bits(0, 0)) /* size */
 				{
-					case DataSize::UByte: reg_stc(fab, A) = UBYTE(reg_stc(fab, B)); break;
-					case DataSize::UWord: reg_stc(fab, A) = UWORD(reg_stc(fab, B)); break;
-					case DataSize::ULong: reg_stc(fab, A) = ULONG(reg_stc(fab, B)); break;
-					case DataSize::UQuad: reg_stc(fab, A) = UQUAD(reg_stc(fab, B)); break;
-					case DataSize::SByte: reg_stc(fab, A) = SBYTE(reg_stc(fab, B)); break;
-					case DataSize::SWord: reg_stc(fab, A) = SWORD(reg_stc(fab, B)); break;
-					case DataSize::SLong: reg_stc(fab, A) = SLONG(reg_stc(fab, B)); break;
-					case DataSize::SQuad: reg_stc(fab, A) = SQUAD(reg_stc(fab, B)); break;
+					case 0: switch (arg_2bits(0, 2)) /* dest mode */
+					{
+						case 0: switch (arg_2bits(0, 4)) /* src mode */
+						{
+							case 0: register(arg_byte(1)).u8 = register(arg_byte(2)).u8; move_break(4);
+							case 1: register(arg_byte(1)).u8 = *rcast(UInt8*, arg_qword(2)); move_break(11);
+							case 2: register(arg_byte(1)).u8 = *rcast(UInt8*, chunk->statics[arg_qword(2)].data); move_break(18);
+							case 3: register(arg_byte(1)).u8 = arg_byte(2); move_break(4);
+						} break;
+						case 1: switch (arg_2bits(0, 4)) /* src mode */
+						{
+							case 0: *rcast(UInt8*, arg_qword(1)) = register(arg_byte(9)).u8; move_break(11);
+							case 1: *rcast(UInt8*, arg_qword(1)) = *rcast(UInt8*, arg_qword(9)); move_break(18);
+							case 2: *rcast(UInt8*, arg_qword(1)) = *rcast(UInt8*, chunk->statics[arg_qword(9)].data); move_break(18);
+							case 3: *rcast(UInt8*, arg_qword(1)) = arg_byte(9); move_break(11);
+						} break;
+						case 2: switch (arg_2bits(0, 4)) /* src mode */
+						{
+							case 0: *rcast(UInt8*, chunk->statics[arg_qword(1)].data) = register(arg_byte(9)).u8; move_break(11);
+							case 1: *rcast(UInt8*, chunk->statics[arg_qword(1)].data) = *rcast(UInt8*, arg_qword(9)); move_break(18);
+							case 2: *rcast(UInt8*, chunk->statics[arg_qword(1)].data) = *rcast(UInt8*, chunk->statics[arg_qword(9)].data); move_break(18);
+							case 3: *rcast(UInt8*, chunk->statics[arg_qword(1)].data) = arg_byte(9); move_break(11);
+						} break;
+					} break;
+					case 1: switch (arg_2bits(0, 2)) /* dest mode */
+					{
+						case 0: switch (arg_2bits(0, 4)) /* src mode */
+						{
+							case 0: register(arg_byte(1)).u16 = register(arg_byte(2)).u16; move_break(4);
+							case 1: register(arg_byte(1)).u16 = *rcast(UInt16*, arg_qword(2)); move_break(11);
+							case 2: register(arg_byte(1)).u16 = *rcast(UInt16*, chunk->statics[arg_qword(2)].data); move_break(18);
+							case 3: register(arg_byte(1)).u16 = arg_word(2); move_break(5);
+						} break;
+						case 1: switch (arg_2bits(0, 4)) /* src mode */
+						{
+							case 0: *rcast(UInt16*, arg_qword(1)) = register(arg_byte(9)).u16; move_break(11);
+							case 1: *rcast(UInt16*, arg_qword(1)) = *rcast(UInt16*, arg_qword(9)); move_break(18);
+							case 2: *rcast(UInt16*, arg_qword(1)) = *rcast(UInt16*, chunk->statics[arg_qword(9)].data); move_break(18);
+							case 3: *rcast(UInt16*, arg_qword(1)) = arg_word(9); move_break(12);
+						} break;
+						case 2: switch (arg_2bits(0, 4)) /* src mode */
+						{
+							case 0: *rcast(UInt16*, chunk->statics[arg_qword(1)].data) = register(arg_byte(9)).u16; move_break(11);
+							case 1: *rcast(UInt16*, chunk->statics[arg_qword(1)].data) = *rcast(UInt16*, arg_qword(9)); move_break(18);
+							case 2: *rcast(UInt16*, chunk->statics[arg_qword(1)].data) = *rcast(UInt16*, chunk->statics[arg_qword(9)].data); move_break(18);
+							case 3: *rcast(UInt16*, chunk->statics[arg_qword(1)].data) = arg_word(9); move_break(12);
+						} break;
+					} break;
+					case 2: switch (arg_2bits(0, 2)) /* dest mode */
+					{
+						case 0: switch (arg_2bits(0, 4)) /* src mode */
+						{
+							case 0: register(arg_byte(1)).u32 = register(arg_byte(2)).u32; move_break(4);
+							case 1: register(arg_byte(1)).u32 = *rcast(UInt32*, arg_qword(2)); move_break(11);
+							case 2: register(arg_byte(1)).u32 = *rcast(UInt32*, chunk->statics[arg_qword(2)].data); move_break(18);
+							case 3: register(arg_byte(1)).u32 = arg_dword(2); move_break(7);
+						} break;
+						case 1: switch (arg_2bits(0, 4)) /* src mode */
+						{
+							case 0: *rcast(UInt32*, arg_qword(1)) = register(arg_byte(9)).u32; move_break(11);
+							case 1: *rcast(UInt32*, arg_qword(1)) = *rcast(UInt32*, arg_qword(9)); move_break(18);
+							case 2: *rcast(UInt32*, arg_qword(1)) = *rcast(UInt32*, chunk->statics[arg_qword(9)].data); move_break(18);
+							case 3: *rcast(UInt32*, arg_qword(1)) = arg_dword(9); move_break(14);
+						} break;
+						case 2: switch (arg_2bits(0, 4)) /* src mode */
+						{
+							case 0: *rcast(UInt32*, chunk->statics[arg_qword(1)].data) = register(arg_byte(9)).u32; move_break(11);
+							case 1: *rcast(UInt32*, chunk->statics[arg_qword(1)].data) = *rcast(UInt32*, arg_qword(9)); move_break(18);
+							case 2: *rcast(UInt32*, chunk->statics[arg_qword(1)].data) = *rcast(UInt32*, chunk->statics[arg_qword(9)].data); move_break(18);
+							case 3: *rcast(UInt32*, chunk->statics[arg_qword(1)].data) = arg_dword(9); move_break(14);
+						} break;
+					} break;
+					case 3: switch (arg_2bits(0, 2)) /* dest mode */
+					{
+						case 0: switch (arg_2bits(0, 4)) /* src mode */
+						{
+							case 0: register(arg_byte(1)).u64 = register(arg_byte(2)).u64; move_break(4);
+							case 1: register(arg_byte(1)).u64 = *rcast(UInt64*, arg_qword(2)); move_break(11);
+							case 2: register(arg_byte(1)).u64 = *rcast(UInt64*, chunk->statics[arg_qword(2)].data); move_break(18);
+							case 3: register(arg_byte(1)).u64 = arg_qword(2); move_break(11);
+						} break;
+						case 1: switch (arg_2bits(0, 4)) /* src mode */
+						{
+							case 0: *rcast(UInt64*, arg_qword(1)) = register(arg_byte(9)).u64; move_break(11);
+							case 1: *rcast(UInt64*, arg_qword(1)) = *rcast(UInt64*, arg_qword(9)); move_break(18);
+							case 2: *rcast(UInt64*, arg_qword(1)) = *rcast(UInt64*, chunk->statics[arg_qword(9)].data); move_break(18);
+							case 3: *rcast(UInt64*, arg_qword(1)) = arg_qword(9); move_break(18);
+						} break;
+						case 2: switch (arg_2bits(0, 4)) /* src mode */
+						{
+							case 0: *rcast(UInt64*, chunk->statics[arg_qword(1)].data) = register(arg_byte(9)).u64; move_break(11);
+							case 1: *rcast(UInt64*, chunk->statics[arg_qword(1)].data) = *rcast(UInt64*, arg_qword(9)); move_break(18);
+							case 2: *rcast(UInt64*, chunk->statics[arg_qword(1)].data) = *rcast(UInt64*, chunk->statics[arg_qword(9)].data); move_break(18);
+							case 3: *rcast(UInt64*, chunk->statics[arg_qword(1)].data) = arg_qword(9); move_break(18);
+						} break;
+					} break;
 				}
-			end_fab();
-
-			opcode(Instruction::I2F)
-				if (fab->features.is_double)
-					set_double_reg_stc(fab, A, static_cast<double>(reg_stc(fab, B)));
-				else set_float_reg_stc(fab, A, static_cast<float>(reg_stc(fab, B)));
-			end_fab();
-
-			opcode(Instruction::F2I)
-				if (fab->features.is_double)
-					switch (fab->features.data_size)
-					{
-						case DataSize::UByte: reg_stc(fab, A) = UBYTE(get_double_reg_stc(fab, B)); break;
-						case DataSize::UWord: reg_stc(fab, A) = UWORD(get_double_reg_stc(fab, B)); break;
-						case DataSize::ULong: reg_stc(fab, A) = ULONG(get_double_reg_stc(fab, B)); break;
-						case DataSize::UQuad: reg_stc(fab, A) = UQUAD(get_double_reg_stc(fab, B)); break;
-						case DataSize::SByte: reg_stc(fab, A) = SBYTE(get_double_reg_stc(fab, B)); break;
-						case DataSize::SWord: reg_stc(fab, A) = SWORD(get_double_reg_stc(fab, B)); break;
-						case DataSize::SLong: reg_stc(fab, A) = SLONG(get_double_reg_stc(fab, B)); break;
-						case DataSize::SQuad: reg_stc(fab, A) = SQUAD(get_double_reg_stc(fab, B)); break;
-					}
-				else
-					switch (fab->features.data_size)
-					{
-						case DataSize::UByte: reg_stc(fab, A) = UBYTE(get_float_reg_stc(fab, B)); break;
-						case DataSize::UWord: reg_stc(fab, A) = UWORD(get_float_reg_stc(fab, B)); break;
-						case DataSize::ULong: reg_stc(fab, A) = ULONG(get_float_reg_stc(fab, B)); break;
-						case DataSize::UQuad: reg_stc(fab, A) = UQUAD(get_float_reg_stc(fab, B)); break;
-						case DataSize::SByte: reg_stc(fab, A) = SBYTE(get_float_reg_stc(fab, B)); break;
-						case DataSize::SWord: reg_stc(fab, A) = SWORD(get_float_reg_stc(fab, B)); break;
-						case DataSize::SLong: reg_stc(fab, A) = SLONG(get_float_reg_stc(fab, B)); break;
-						case DataSize::SQuad: reg_stc(fab, A) = SQUAD(get_float_reg_stc(fab, B)); break;
-					}
-			end_fab();
-
-			opcode(Instruction::F2F)
-				if (fab->features.is_double)
-					set_double_reg_stc(fab, A, static_cast<double>(get_double_reg_stc(fab, B)));
-				else set_float_reg_stc(fab, A, static_cast<float>(get_double_reg_stc(fab, B)));
-			end_fab();
-
-
-			opcode(Instruction::ADD)
-				binary_op(+);
-			end_fabc();
-
-			opcode(Instruction::SUB)
-				binary_op(-);
-			end_fabc();
-
-			opcode(Instruction::MUL)
-				binary_op(*);
-			end_fabc();
-
-			opcode(Instruction::DIV)
-				binary_op(/);
-			end_fabc();
-
-
-
-			opcode(Instruction::RET)
-				finish_call(&state, 0);
-			end_opcode(1);
+			end_opcode();
 		}
 	}
 }

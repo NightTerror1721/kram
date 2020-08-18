@@ -7,13 +7,12 @@
 namespace kram::runtime
 {
 	struct CallInfo;
-	struct CallStack;
-	struct RegisterStack;
-	struct AutodataStack;
+	struct Stack;
 	struct RuntimeState;
 
 	typedef UInt16 InstructionOffset;
 	typedef UInt8 RegisterOffset;
+	typedef Size DataOffset;
 	typedef Size ChunkOffset;
 
 	typedef std::byte StackUnit;
@@ -33,64 +32,42 @@ namespace kram::runtime
 		op::inst::Instruction* lastInst;
 		bin::Chunk* chunk;
 
-		StackUnit* regsTop;
-		StackUnit* regsBottom;
+		StackUnit* top;
+		Register* regs;
+		StackUnit* data;
 
-		StackUnit* dataTop;
-		StackUnit* dataBottom;
+		RegisterOffset returnRegisterOffset;
+
+		UInt8 __padding[7];
 	};
 
-	struct CallStack
-	{
-		CallInfo* roof;
-		CallInfo* base;
-
-		CallInfo* top;
-
-		bool push(RuntimeState* state);
-		bool pop(RuntimeState* state);
-	};
-
-	struct RegisterStack
+	struct Stack
 	{
 		StackUnit* roof;
 		StackUnit* base;
 
 		StackUnit* top;
-		union
-		{
-			Register* registers;
-			StackUnit* bottom;
-		};
-	};
-
-	struct AutodataStack
-	{
-		StackUnit* roof;
-		StackUnit* base;
-
-		StackUnit* top;
-		StackUnit* bottom;
+		Register* regs;
+		StackUnit* data;
+		CallInfo* cinfo;
 	};
 
 	struct RuntimeState
 	{
-		RegisterStack* rstack;
-		AutodataStack* dstack;
-		CallStack* cstack;
-		bin::Chunk** chunk;
-		op::inst::Instruction** inst;
-		op::inst::Instruction** lastInst;
+		Stack* stack;
+
+		bin::Chunk* chunk;
+		op::inst::Instruction* inst;
+		op::inst::Instruction* lastInst;
+
+		bool exit;
+
 		ErrorCode error;
 
-		RuntimeState(RegisterStack* rstack, AutodataStack* dstack, CallStack* cstack,
-			bin::Chunk** chunk, op::inst::Instruction** inst, op::inst::Instruction** lastInst);
-
-		void set(CallInfo* info);
-		void set(bin::Chunk* chunk, RegisterOffset firstRegister);
+		RuntimeState(Stack* stack);
 	};
 
-	void execute(RegisterStack* rstack, AutodataStack* dstack, CallStack* cstack, bin::Chunk* chunk);
+	void execute(Stack* stack, bin::Chunk* chunk);
 }
 
 

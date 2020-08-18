@@ -24,7 +24,22 @@ namespace kram
 
 	typedef std::size_t Size;
 
-	typedef UInt64 Register;
+	//typedef UInt64 Register;
+
+	union Register
+	{
+		UInt8 u8;
+		UInt16 u16;
+		UInt32 u32;
+		UInt64 u64;
+
+		Int8 s8;
+		Int16 s16;
+		Int32 s32;
+		Int64 s64;
+
+		UInt64 reg;
+	};
 }
 
 namespace kram::types

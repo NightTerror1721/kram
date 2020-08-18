@@ -143,11 +143,6 @@ namespace kram::bin
 	struct StaticValue
 	{
 		const DataType* type;
-		union
-		{
-			Register value;
-			void* dataPointer;
-		};
 		Size size;
 		void* data;
 	};
@@ -158,8 +153,8 @@ namespace kram::bin
 		void* data;
 
 		UInt8 parameterCount;
-		UInt8 variableCount;
-		Size autodataCount;
+		UInt8 registerCount;
+		Size stackSize;
 
 		const DataType** parameterTypes;
 		const DataType* returnType;
@@ -167,7 +162,7 @@ namespace kram::bin
 		Size typeCount;
 		Size staticCount;
 		Size childChunkCount;
-		UInt16 codeSize;
+		Size codeSize;
 		
 		const DataType* types;
 		StaticValue* statics;

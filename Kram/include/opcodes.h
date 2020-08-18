@@ -8,7 +8,22 @@ namespace kram::op::inst
 	{
 		NOP = 0x00,
 
-		MOV, //FAB// Move static/register[B] to static/register[A]
+		MOV, /* #8[size:2|dest_mode:2|src_mode:2|<ignore>:2], #8/16/32/64[destination:8/16/32/64], #8/16/32/64[source:8/16/32/64]
+			  * Move memory from source to destination
+			  * Avaliable modes:
+			  *		0: Register
+			  *		1: Memory location
+			  *		2: Static Chunk location
+			  *		3: Immediate value (only for source)
+			  * Available Sizes:
+			  *		0: Byte (8 bits)
+			  *		1: Word (16 bits)
+			  *		2: DWord (32 bits)
+			  *		3: QWord (64 bits)
+			  */
+
+
+		/*MOV, //FAB// Move static/register[B] to static/register[A]
 
 		PUT, //FABx// Set inmediate value[Bx] to static/register[A]
 
@@ -34,77 +49,11 @@ namespace kram::op::inst
 
 
 
-		RET, ////Empty return
+		RET, ////Empty return*/
 	};
 }
 
-#define INSTRUCTION_BX_GET(_Bx) *reinterpret_cast<kram::UInt64*>(&(_Bx)[0])
-#define INSTRUCTION_BX_SET(_Bx, _Value) (INSTRUCTION_BX_GET(_Bx) = (_Value))
 namespace kram::op::data
 {
-	enum class DataSize : UInt8
-	{
-		UByte = 0x0,
-		UWord = 0x1,
-		ULong = 0x2,
-		UQuad = 0x3,
-		SByte = 0x4,
-		SWord = 0x5,
-		SLong = 0x6,
-		SQuad = 0x7,
-	};
-
-	namespace
-	{
-		struct _InstructionFeatures
-		{
-			bool static_A : 1;
-			bool static_B : 1;
-			bool static_C : 1;
-
-			DataSize data_size : 3;
-
-			bool is_double : 1;
-
-			bool jump : 1;
-		};
-	}
-
-	struct EmptyInstruction { inst::Instruction opcode; };
-
-	struct FAB_Instruction
-	{
-		inst::Instruction opcode;
-		_InstructionFeatures features;
-		UInt8 A;
-		UInt8 B;
-	};
-
-	struct FABC_Instruction
-	{
-		inst::Instruction opcode;
-		_InstructionFeatures features;
-		UInt8 A;
-		UInt8 B;
-		UInt8 C;
-	};
-
-	struct FABx_Instruction
-	{
-		inst::Instruction opcode;
-		_InstructionFeatures features;
-		UInt8 A;
-		UInt8 Bx[8];
-	};
-
-	struct FABxC_Instruction
-	{
-		inst::Instruction opcode;
-		_InstructionFeatures features;
-		UInt8 A;
-		UInt8 Bx[8];
-		UInt8 C;
-	};
-
-	//constexpr Size s = sizeof(FBxCA_Instruction);
+	
 }
