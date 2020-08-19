@@ -38,6 +38,24 @@ namespace kram
 		Int32 s32;
 		Int64 s64;
 
+		float f32;
+		double f64;
+
+
+		UInt8* addr_u8;
+		UInt16* addr_u16;
+		UInt32* addr_u32;
+		UInt64* addr_u64;
+
+		Int8* addr_s8;
+		Int16* addr_s16;
+		Int32* addr_s32;
+		Int64* addr_s64;
+
+		float* addr_f32;
+		double* addr_f64;
+
+
 		UInt64 reg;
 	};
 }

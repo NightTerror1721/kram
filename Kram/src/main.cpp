@@ -1,3 +1,5 @@
+#include <iostream>
+
 #include "vm.h"
 #include "bindata.h"
 #include "opcodes.h"
@@ -5,7 +7,7 @@
 int main(int argc, char** argv)
 {
 	kram::Register r0;
-	r0.s32 = 256;
+	r0.s32 = 1;
 
 	/*kram::KramState state{ 1024 * 1024 };
 	int* value = static_cast<int*>(state.malloc(sizeof(int)));

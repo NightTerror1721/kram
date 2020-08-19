@@ -8,19 +8,26 @@ namespace kram::op::inst
 	{
 		NOP = 0x00,
 
-		MOV, /* #8[size:2|dest_mode:2|src_mode:2|<ignore>:2], #8/16/32/64[destination:8/16/32/64], #8/16/32/64[source:8/16/32/64]
+		MOV, /* [size:2|dest_mode:3|src_mode:3], [destination:8/16/32/64], [source:8/16/32/64]
 			  * Move memory from source to destination
 			  * Avaliable modes:
 			  *		0: Register
-			  *		1: Memory location
-			  *		2: Static Chunk location
-			  *		3: Immediate value (only for source)
+			  *		1: Immediate value (only for source)
+			  *		2: Stack data location
+			  *		3: Stack data location + delta
+			  *		4: Static data location
+			  *		5: Static data location + delta
+			  *		6: Location at register
+			  *		7: Location at register + delta
 			  * Available Sizes:
 			  *		0: Byte (8 bits)
 			  *		1: Word (16 bits)
 			  *		2: DWord (32 bits)
 			  *		3: QWord (64 bits)
 			  */
+
+		LDA, /* [register_dest:8], [stack_idx:32]
+			 */
 
 
 		/*MOV, //FAB// Move static/register[B] to static/register[A]
