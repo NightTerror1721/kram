@@ -9,6 +9,7 @@
 #include <vector>
 #include <string>
 #include <map>
+#include <bit>
 
 namespace kram
 {
@@ -55,6 +56,8 @@ namespace kram
 		float* addr_f32;
 		double* addr_f64;
 
+		void* addr;
+
 
 		UInt64 reg;
 	};
@@ -96,5 +99,59 @@ namespace kram::utils
 		#pragma warning(suppress : 4996)
 		return std::strncpy(dest, source, num);
 	}
+
+	template<unsigned int _BitIdx, unsigned int _BitCount, typename _Ty = UInt8>
+	constexpr _Ty get_bits(_Ty value)
+	{
+		return static_cast<_Ty>((value >> _BitIdx) & ((0x1 << (_BitCount + 1)) - 1));
+	}
 }
+
+#define CONCAT_MACROS(_A, _B) _A ## _B
+
+#if defined (__GLIBC__)
+# include <endian.h>
+# if (__BYTE_ORDER == __LITTLE_ENDIAN)
+#  define KRAM_LITTLE_ENDIAN
+# elif (__BYTE_ORDER == __BIG_ENDIAN)
+#  define KRAM_BIG_ENDIAN
+# elif (__BYTE_ORDER == __PDP_ENDIAN)
+#  define KRAM_PDP_ENDIAN
+# else
+#  error Unknown machine endianness detected.
+# endif
+# define KRAM_BYTE_ORDER __BYTE_ORDER
+#elif defined(_BIG_ENDIAN) && !defined(_LITTLE_ENDIAN)
+# define KRAM_BIG_ENDIAN
+# define KRAM_BYTE_ORDER 4321
+#elif defined(_LITTLE_ENDIAN) && !defined(_BIG_ENDIAN)
+# define KRAM_LITTLE_ENDIAN
+# define KRAM_BYTE_ORDER 1234
+#elif defined(__sparc) || defined(__sparc__) \
+   || defined(_POWER) || defined(__powerpc__) \
+   || defined(__ppc__) || defined(__hpux) || defined(__hppa) \
+   || defined(_MIPSEB) || defined(_POWER) \
+   || defined(__s390__)
+# define KRAM_BIG_ENDIAN
+# define KRAM_BYTE_ORDER 4321
+#elif defined(__i386__) || defined(__alpha__) \
+   || defined(__ia64) || defined(__ia64__) \
+   || defined(_M_IX86) || defined(_M_IA64) \
+   || defined(_M_ALPHA) || defined(__amd64) \
+   || defined(__amd64__) || defined(_M_AMD64) \
+   || defined(__x86_64) || defined(__x86_64__) \
+   || defined(_M_X64) || defined(__bfin__)
+
+# define KRAM_LITTLE_ENDIAN
+# define KRAM_BYTE_ORDER 1234
+#else
+# error Unknown endianness type for this CPU.
+#endif
+
+#if defined(_MSC_VER) || defined(_MSVC_LANG)
+	#define forceinline __forceinline
+#else
+	#define forceinline inline
+#endif
+
 

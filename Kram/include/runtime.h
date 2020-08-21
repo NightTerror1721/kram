@@ -14,6 +14,7 @@ namespace kram::runtime
 	typedef UInt8 RegisterOffset;
 	typedef Size DataOffset;
 	typedef Size ChunkOffset;
+	typedef Size FunctionOffset;
 
 	typedef std::byte StackUnit;
 
@@ -28,8 +29,7 @@ namespace kram::runtime
 
 	struct CallInfo
 	{
-		op::inst::Instruction* inst;
-		op::inst::Instruction* lastInst;
+		op::Opcode* inst;
 		bin::Chunk* chunk;
 
 		StackUnit* top;
@@ -57,8 +57,7 @@ namespace kram::runtime
 		Stack* stack;
 
 		bin::Chunk* chunk;
-		op::inst::Instruction* inst;
-		op::inst::Instruction* lastInst;
+		op::Opcode* inst;
 
 		bool exit;
 
@@ -67,7 +66,7 @@ namespace kram::runtime
 		RuntimeState(Stack* stack);
 	};
 
-	void execute(Stack* stack, bin::Chunk* chunk);
+	void execute(Stack* stack, bin::Chunk* chunk, FunctionOffset function);
 }
 
 

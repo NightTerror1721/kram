@@ -3,7 +3,9 @@
 #define rcast(_Type, _Value) reinterpret_cast<_Type>(_Value)
 
 using namespace kram::bin;
-using kram::op::inst::Instruction;
+using kram::op::Opcode;
+
+#define SELF_CHUNK static_cast<ChunkOffset>(-1)
 
 namespace kram::runtime
 {
@@ -11,44 +13,18 @@ namespace kram::runtime
 		stack{ stack },
 		chunk{ nullptr },
 		inst{ nullptr },
-		lastInst{ nullptr },
 		exit{ false },
 		error{ ErrorCode::OK }
 	{}
 
-	static void main_chunk_call(RuntimeState* state, Chunk* chunk)
+	static void call_chunk(RuntimeState* state, ChunkOffset chunkOffset, FunctionOffset functionOffset, RegisterOffset retRegOffset)
 	{
 		Stack* stack = state->stack;
-		CallInfo* info = rcast(CallInfo*, stack->top);
-
-		info->inst = nullptr;
-		info->lastInst = nullptr;
-		info->chunk = nullptr;
-
-		info->top = stack->top;
-		info->regs = stack->regs;
-		info->data = stack->data;
-
-		info->returnRegisterOffset = 0;
-
-
-		stack->data = rcast(StackUnit*, info + 1);
-		stack->regs = rcast(Register*, stack->regs + chunk->stackSize);
-		stack->top = rcast(StackUnit*, stack->data + chunk->registerCount);
-
-		state->chunk = chunk;
-		state->inst = rcast(Instruction*, chunk->code);
-		state->lastInst = rcast(Instruction*, chunk->code) + (chunk->codeSize - 1);
-	}
-
-	static void call_chunk(RuntimeState* state, ChunkOffset chunkOffset, DataOffset dataOffset, Size dataSize, RegisterOffset retRegOffset)
-	{
-		Stack* stack = state->stack;
-		Chunk* chunk = state->chunk->childChunks + chunkOffset;
+		Chunk* chunk = chunkOffset == SELF_CHUNK ? state->chunk : state->chunk->childChunks + chunkOffset;
+		Function* function = chunk->functions + functionOffset;
 		CallInfo* info = rcast(CallInfo*, stack->top);
 
 		info->inst = state->inst;
-		info->lastInst = state->lastInst;
 		info->chunk = state->chunk;
 
 		info->top = stack->top;
@@ -59,15 +35,11 @@ namespace kram::runtime
 
 
 		stack->data = rcast(StackUnit*, info + 1);
-		stack->regs = rcast(Register*, stack->regs + chunk->stackSize);
-		stack->top = rcast(StackUnit*, stack->data + chunk->registerCount);
+		stack->regs = rcast(Register*, stack->regs + function->stackSize);
+		stack->top = rcast(StackUnit*, stack->data + function->registerCount);
 
 		state->chunk = chunk;
-		state->inst = rcast(Instruction*, chunk->code);
-		state->lastInst = rcast(Instruction*, chunk->code) + (chunk->codeSize - 1);
-
-
-		std::memcpy(stack->data, info->data + dataOffset, dataSize);
+		state->inst = rcast(Opcode*, function->code);
 	}
 
 	static void finish_call(RuntimeState* state, RegisterOffset retRegOffset)
@@ -83,7 +55,6 @@ namespace kram::runtime
 
 		state->chunk = info->chunk;
 		state->inst = info->inst;
-		state->lastInst = info->lastInst;
 
 		if(!(state->exit = !state->inst))
 			stack->regs[info->returnRegisterOffset].reg = rr;
@@ -93,18 +64,27 @@ namespace kram::runtime
 #define move_pc(_Amount) (state.inst += (_Amount))
 #define opcode(_Inst) case _Inst : {
 #define end_opcode() } goto instruction_begin
+#define break_endop() goto instruction_begin
 #define movpc_endop(_Amount) move_pc(_Amount); goto instruction_begin
 
 #define register(_Idx) state.stack->regs[_Idx]
 
-#define register_data(_Part, _Idx) *register(_Idx).addr_ ## _Part
-#define register_data_d(_Type, _Idx, _Delta) *rcast(_Type*, register(_Idx).addr_u8 + (_Delta))
+#define register_data_a(_Part, _Idx) register(_Idx).CONCAT_MACROS(addr_, _Part)
+#define register_data_ad(_Type, _Idx, _Delta) rcast(_Type*, register(_Idx).addr_u8 + (_Delta))
+#define register_data(_Part, _Idx) *register_data_a(_Part, _Idx)
+#define register_data_d(_Type, _Idx, _Delta) *register_data_ad(_Type, _Idx, _Delta)
 
-#define stack_data(_Type, _Idx) *rcast(_Type*, state.stack->data + (_Idx))
-#define stack_data_d(_Type, _Idx, _Delta) *rcast(_Type*, state.stack->data + ((_Idx) + (_Delta)))
+#define stack_data_a(_Type, _Idx) rcast(_Type*, state.stack->data + (_Idx))
+#define stack_data_ad(_Type, _Idx, _Delta) rcast(_Type*, state.stack->data + ((_Idx) + (_Delta)))
+#define stack_data(_Type, _Idx) *stack_data_a(_Type, _Idx)
+#define stack_data_d(_Type, _Idx, _Delta) *stack_data_ad(_Type, _Idx, _Delta)
 
-#define static_data(_Type, _Idx) *rcast(_Type*, chunk->statics[_Idx].data)
-#define static_data_d(_Type, _Idx, _Delta) *rcast(_Type*, rcast(UInt8*, chunk->statics[_Idx].data) + (_Delta))
+#define static_data_a(_Type, _Idx) rcast(_Type*, chunk->statics[_Idx].data)
+#define static_data_ad(_Type, _Idx, _Delta) rcast(_Type*, rcast(UInt8*, chunk->statics[_Idx].data) + (_Delta))
+#define static_data(_Type, _Idx) *static_data_a(_Type, _Idx)
+#define static_data_d(_Type, _Idx, _Delta) *static_data_ad(_Type, _Idx, _Delta)
+
+#define stack_arg_data(_Type, _Idx) *rcast(_Type*, state.stack->top + (sizeof(CallInfo) + (_Idx)))
 
 #define scast(_Type, _Value) static_cast<_Type>(_Value)
 
@@ -127,348 +107,296 @@ namespace kram::runtime
 #define arg_7bits(_Idx, _BitIdx) ((arg_byte(_Idx) >> (_BitIdx)) & 0x7FU)
 
 
-void kram::runtime::execute(Stack* stack, Chunk* chunk)
+#define mcpy(_Dst, _Src, _Size) std::memcpy((_Dst), (_Src), static_cast<kram::Size>(_Size))
+
+#define op_cast_type(_Reg, _RegPart) \
+	switch (arg_4bits(0, 4)) { \
+		case 0: reg->_RegPart = static_cast<decltype(reg->_RegPart)>(reg->u8); movpc_endop(3); \
+		case 1: reg->_RegPart = static_cast<decltype(reg->_RegPart)>(reg->u16); movpc_endop(3); \
+		case 2: reg->_RegPart = static_cast<decltype(reg->_RegPart)>(reg->u32); movpc_endop(3); \
+		case 3: reg->_RegPart = static_cast<decltype(reg->_RegPart)>(reg->u64); movpc_endop(3); \
+		case 4: reg->_RegPart = static_cast<decltype(reg->_RegPart)>(reg->s8); movpc_endop(3); \
+		case 5: reg->_RegPart = static_cast<decltype(reg->_RegPart)>(reg->s16); movpc_endop(3); \
+		case 6: reg->_RegPart = static_cast<decltype(reg->_RegPart)>(reg->s32); movpc_endop(3); \
+		case 7: reg->_RegPart = static_cast<decltype(reg->_RegPart)>(reg->s64); movpc_endop(3); \
+		case 8: reg->_RegPart = static_cast<decltype(reg->_RegPart)>(reg->f32); movpc_endop(3); \
+		case 9: reg->_RegPart = static_cast<decltype(reg->_RegPart)>(reg->f64); movpc_endop(3); \
+	} break
+
+#define op_binary(_Op, _DstRegId, _SrcRegId) \
+	switch (arg_4bits(0, 0)) { \
+		case 0: register(_DstRegId).u8 _Op ## = register(_SrcRegId).u8; movpc_endop(3); \
+		case 1: register(_DstRegId).u16 _Op ## = register(_SrcRegId).u16; movpc_endop(3); \
+		case 2: register(_DstRegId).u32 _Op ## = register(_SrcRegId).u32; movpc_endop(3); \
+		case 3: register(_DstRegId).u64 _Op ## = register(_SrcRegId).u64; movpc_endop(3); \
+		case 4: register(_DstRegId).s8 _Op ## = register(_SrcRegId).s8; movpc_endop(3); \
+		case 5: register(_DstRegId).s16 _Op ## = register(_SrcRegId).s16; movpc_endop(3); \
+		case 6: register(_DstRegId).s32 _Op ## = register(_SrcRegId).s32; movpc_endop(3); \
+		case 7: register(_DstRegId).s64 _Op ## = register(_SrcRegId).s64; movpc_endop(3); \
+		case 8: register(_DstRegId).f32 _Op ## = register(_SrcRegId).f32; movpc_endop(3); \
+		case 9: register(_DstRegId).f64 _Op ## = register(_SrcRegId).f64; movpc_endop(3); \
+	} break
+
+
+namespace kram::runtime::support
+{
+	template<typename _Ty>
+	forceinline _Ty* reg(RuntimeState& state, UInt8 idx) { return rcast(_Ty*, &state.stack->regs[idx].reg); }
+
+	template<typename _Ty, typename _ArgType>
+	forceinline _Ty* a_data(RuntimeState& state, _ArgType idx) { return rcast(_Ty*, state.stack->data + idx); }
+
+	template<typename _Ty, typename _ArgType>
+	forceinline _Ty* a_data(RuntimeState& state, _ArgType idx, _ArgType delta)
+	{
+		return rcast(_Ty*, state.stack->data + (scast(Size, idx) + delta));
+	}
+
+	template<typename _Ty, typename _ArgType>
+	forceinline _Ty* s_data(RuntimeState& state, _ArgType idx) { return rcast(_Ty*, state.chunk->statics[idx].data); }
+
+	template<typename _Ty, typename _ArgType>
+	forceinline _Ty* s_data(RuntimeState& state, _ArgType idx, _ArgType delta)
+	{
+		return rcast(_Ty*, rcast(char*, state.chunk->statics[idx].data) + delta);
+	}
+
+	template<typename _Ty, typename _ArgType>
+	forceinline _Ty* r_data(RuntimeState& state, UInt8 idx) { return rcast(_Ty*, state.stack->regs[idx].addr); }
+
+	template<typename _Ty, typename _ArgType>
+	forceinline _Ty* r_data(RuntimeState& state, UInt8 idx, _ArgType delta)
+	{
+		return rcast(_Ty*, rcast(char*, state.stack->regs[idx].addr) + delta);
+	}
+
+	template<typename _Ty, typename _ArgType>
+	forceinline _Ty* aa_data(RuntimeState& state, _ArgType idx) { return rcast(_Ty*, state.stack->top + sizeof(CallInfo) + idx); }
+
+	template<typename _Ty, unsigned int _Idx>
+	forceinline _Ty arg(RuntimeState& state) { return *rcast(_Ty*, state.inst + _Idx); }
+
+	template<typename _Ty, unsigned int _Idx>
+	forceinline _Ty& ref_arg(RuntimeState& state) { return *rcast(_Ty*, state.inst + _Idx); }
+
+	template<typename _Ty, unsigned int _Idx, typename _ShiftType, unsigned int _ShiftAmount>
+	forceinline _Ty sarg(RuntimeState& state) { return *rcast(_Ty*, state.inst + _Idx + (sizeof(_ShiftType) * _ShiftAmount - _ShiftAmount)); }
+
+	template<typename _ArgMode, typename _DataSize, unsigned int _ArgOffset>
+	forceinline int mov_access(RuntimeState& state, UInt8 mode, _DataSize** out)
+	{
+		switch (mode)
+		{
+			case 0: return (*out = reg<_DataSize>(state, arg<UInt8, _ArgOffset>(state))), _ArgOffset + 1;
+			case 1: return (*out = &ref_arg<_DataSize, _ArgOffset>(state)), _ArgOffset + sizeof(_DataSize);
+			case 2: return (*out = a_data<_DataSize, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state))), _ArgOffset + sizeof(_ArgMode);
+			case 3: return (*out = a_data<_DataSize, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state), sarg<_ArgMode, _ArgOffset + 1, _ArgMode, 1>(state))), _ArgOffset + (sizeof(_ArgMode) * 2);
+			case 4: return (*out = s_data<_DataSize, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state))), _ArgOffset + sizeof(_ArgMode);
+			case 5: return (*out = s_data<_DataSize, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state), sarg<_ArgMode, _ArgOffset + 1, _ArgMode, 1>(state))), _ArgOffset + (sizeof(_ArgMode) * 2);
+			case 6: return (*out = r_data<_DataSize, _ArgMode>(state, arg<UInt8, _ArgOffset>(state))), _ArgOffset + 1;
+			case 7: return (*out = r_data<_DataSize, _ArgMode>(state, arg<UInt8, _ArgOffset>(state), arg<_ArgMode, _ArgOffset>(state))), _ArgOffset + (1 + sizeof(_ArgMode));
+		}
+		return 0;
+	}
+
+	template<typename _ArgMode, unsigned int _ArgOffset>
+	forceinline int mmb_access(RuntimeState& state, UInt8 mode, void** out)
+	{
+		switch (mode)
+		{
+			case 0: return (*out = a_data<void, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state))), _ArgOffset + sizeof(_ArgMode);
+			case 1: return (*out = a_data<void, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state), sarg<_ArgMode, _ArgOffset + 1, _ArgMode, 1>(state))), _ArgOffset + (sizeof(_ArgMode) * 2);
+			case 2: return (*out = s_data<void, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state))), _ArgOffset + sizeof(_ArgMode);
+			case 3: return (*out = s_data<void, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state), sarg<_ArgMode, _ArgOffset + 1, _ArgMode, 1>(state))), _ArgOffset + (sizeof(_ArgMode) * 2);
+			case 4: return (*out = r_data<void, _ArgMode>(state, arg<UInt8, _ArgOffset>(state))), _ArgOffset + 1;
+			case 5: return (*out = r_data<void, _ArgMode>(state, arg<UInt8, _ArgOffset>(state), arg<_ArgMode, _ArgOffset>(state))), _ArgOffset + (1 + sizeof(_ArgMode));
+		}
+		return 0;
+	}
+
+	template<typename _ArgMode, unsigned int _ArgOffset>
+	forceinline int lea_access(RuntimeState& state, UInt8 mode, void** out)
+	{
+		switch (mode)
+		{
+			case 0: return (*out = a_data<void, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state))), _ArgOffset + sizeof(_ArgMode);
+			case 1: return (*out = a_data<void, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state), sarg<_ArgMode, _ArgOffset + 1, _ArgMode, 1>(state))), _ArgOffset + (sizeof(_ArgMode) * 2);
+			case 2: return (*out = s_data<void, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state))), _ArgOffset + sizeof(_ArgMode);
+			case 3: return (*out = s_data<void, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state), sarg<_ArgMode, _ArgOffset + 1, _ArgMode, 1>(state))), _ArgOffset + (sizeof(_ArgMode) * 2);
+		}
+		return 0;
+	}
+
+	template<typename _ArgMode>
+	forceinline void mov(RuntimeState& state)
+	{
+
+		switch (arg_2bits(0, 0))
+		{
+			case 0: {
+				UInt8* src;
+				UInt8* dst;
+				move_pc((mov_access<_ArgMode, UInt8, 1U>(state, arg_3bits(0, 2), &dst)) + 1LL);
+				move_pc((mov_access<_ArgMode, UInt8, 0U>(state, arg_3bits(0, 5), &src)));
+				*dst = *src;
+			} return;
+			case 1: {
+				UInt16* src;
+				UInt16* dst;
+				move_pc((mov_access<_ArgMode, UInt16, 1U>(state, arg_3bits(0, 2), &dst)) + 1LL);
+				move_pc((mov_access<_ArgMode, UInt16, 0U>(state, arg_3bits(0, 5), &src)));
+				*dst = *src;
+			} return;
+			case 2: {
+				UInt32* src;
+				UInt32* dst;
+				move_pc((mov_access<_ArgMode, UInt32, 1U>(state, arg_3bits(0, 2), &dst)) + 1LL);
+				move_pc((mov_access<_ArgMode, UInt32, 0U>(state, arg_3bits(0, 5), &src)));
+				*dst = *src;
+			} return;
+			case 3: {
+				UInt64* src;
+				UInt64* dst;
+				move_pc((mov_access<_ArgMode, UInt64, 1U>(state, arg_3bits(0, 2), &dst)) + 1LL);
+				move_pc((mov_access<_ArgMode, UInt64, 0U>(state, arg_3bits(0, 5), &src)));
+				*dst = *src;
+			} return;
+		}
+	}
+
+	template<typename _ArgMode>
+	forceinline void mmb(RuntimeState& state)
+	{
+		void *src, *dst;
+		move_pc((mmb_access<_ArgMode, sizeof(_ArgMode) + 1U>(state, arg_3bits(0, 2), &dst)) + (1LL + sizeof(_ArgMode)));
+		move_pc((mmb_access<_ArgMode, 0U>(state, arg_3bits(0, 5), &src)));
+		std::memcpy(dst, src, arg<_ArgMode, 1U>(state));
+	}
+
+	template<typename _ArgMode>
+	forceinline void las(RuntimeState& state)
+	{
+
+		switch (arg_2bits(0, 2))
+		{
+			case 0: {
+				UInt8* src;
+				UInt8* dst;
+				dst = aa_data<UInt8, _ArgMode>(state, arg<_ArgMode, 1U>(state));
+				move_pc((mov_access<_ArgMode, UInt8, 1U + sizeof(_ArgMode)>(state, arg_3bits(0, 4), &src)) + (1LL + sizeof(_ArgMode)));
+				*dst = *src;
+			} return;
+			case 1: {
+				UInt16* src;
+				UInt16* dst;
+				dst = aa_data<UInt16, _ArgMode>(state, arg<_ArgMode, 1U>(state));
+				move_pc((mov_access<_ArgMode, UInt16, 1U + sizeof(_ArgMode)>(state, arg_3bits(0, 4), &src)) + (1LL + sizeof(_ArgMode)));
+				*dst = *src;
+			} return;
+			case 2: {
+				UInt32* src;
+				UInt32* dst;
+				dst = aa_data<UInt32, _ArgMode>(state, arg<_ArgMode, 1U>(state));
+				move_pc((mov_access<_ArgMode, UInt32, 1U + sizeof(_ArgMode)>(state, arg_3bits(0, 4), &src)) + (1LL + sizeof(_ArgMode)));
+				*dst = *src;
+			} return;
+			case 3: {
+				UInt64* src;
+				UInt64* dst;
+				dst = aa_data<UInt64, _ArgMode>(state, arg<_ArgMode, 1U>(state));
+				move_pc((mov_access<_ArgMode, UInt64, 1U + sizeof(_ArgMode)>(state, arg_3bits(0, 4), &src)) + (1LL + sizeof(_ArgMode)));
+				*dst = *src;
+			} return;
+		}
+	}
+
+	template<typename _ArgMode>
+	forceinline void lea(RuntimeState& state)
+	{
+		move_pc((lea_access<_ArgMode, 2U>(state, arg_3bits(0, 4), &(state.stack->regs[arg<UInt8, 1>(state)].addr))) + 2LL);
+	}
+}
+
+
+void kram::runtime::execute(Stack* stack, Chunk* chunk, FunctionOffset function)
 {
 	RuntimeState state{ stack };
-	main_chunk_call(&state, chunk);
+	call_chunk(&state, SELF_CHUNK, function, 0);
 
-	for (;state.inst <= state.lastInst;)
+	for (;;)
 	{
 		instruction_begin:
 		switch (*state.inst)
 		{
-			opcode(Instruction::NOP)
+			opcode(Opcode::NOP)
 				move_pc(1);
 			end_opcode();
 
-			opcode(Instruction::MOV)
-				switch (arg_2bits(0, 0)) /* size */
+			opcode(Opcode::MOV)
+				support::mov<UInt8>(state);
+			end_opcode();
+
+			opcode(Opcode::MOVX)
+				support::mov<UInt16>(state);
+			end_opcode();
+
+			opcode(Opcode::MOVEX)
+				support::mov<UInt32>(state);
+			end_opcode();
+
+			opcode(Opcode::MOVRX)
+				support::mov<UInt64>(state);
+			end_opcode();
+
+			opcode(Opcode::MMB)
+				switch (arg_2bits(0, 0))
 				{
-					case 0: switch (arg_3bits(0, 2)) /* dest mode */
-					{
-						case 0: switch (arg_3bits(0, 5)) /* src mode */
-						{
-							case 0: register(arg_byte(1)).u8 = register(arg_byte(2)).u8; movpc_endop(4);
-							case 1: register(arg_byte(1)).u8 = arg_byte(2); movpc_endop(4);
-							case 2: register(arg_byte(1)).u8 = stack_data(UInt8, arg_qword(2)); movpc_endop(11);
-							case 3: register(arg_byte(1)).u8 = stack_data_d(UInt8, arg_qword(2), arg_dword(10)); movpc_endop(15);
-							case 4: register(arg_byte(1)).u8 = static_data(UInt8, arg_qword(2)); movpc_endop(11);
-							case 5: register(arg_byte(1)).u8 = static_data_d(UInt8, arg_qword(2), arg_dword(10)); movpc_endop(15);
-							case 6: register(arg_byte(1)).u8 = register_data(u8, arg_byte(2)); movpc_endop(4);
-							case 7: register(arg_byte(1)).u8 = register_data_d(UInt8, arg_byte(2), arg_dword(3)); movpc_endop(8);
-						} break;
-						case 1: movpc_endop(1);
-						case 2: switch (arg_3bits(0, 5)) /* src mode */
-						{
-							case 0: stack_data(UInt8, arg_qword(1)) = register(arg_byte(9)).u8; movpc_endop(11);
-							case 1: stack_data(UInt8, arg_qword(1)) = arg_byte(9); movpc_endop(11);
-							case 2: stack_data(UInt8, arg_qword(1)) = stack_data(UInt8, arg_qword(9)); movpc_endop(18);
-							case 3: stack_data(UInt8, arg_qword(1)) = stack_data_d(UInt8, arg_qword(9), arg_dword(17)); movpc_endop(22);
-							case 4: stack_data(UInt8, arg_qword(1)) = static_data(UInt8, arg_qword(9)); movpc_endop(18);
-							case 5: stack_data(UInt8, arg_qword(1)) = static_data_d(UInt8, arg_qword(9), arg_dword(17)); movpc_endop(22);
-							case 6: stack_data(UInt8, arg_qword(1)) = register_data(u8, arg_byte(9)); movpc_endop(11);
-							case 7: stack_data(UInt8, arg_qword(1)) = register_data_d(UInt8, arg_byte(9), arg_dword(10)); movpc_endop(15);
-						} break;
-						case 3: switch (arg_3bits(0, 5)) /* src mode */
-						{
-							case 0: stack_data_d(UInt8, arg_qword(1), arg_dword(9)) = register(arg_byte(13)).u8; movpc_endop(15);
-							case 1: stack_data_d(UInt8, arg_qword(1), arg_dword(9)) = arg_byte(13); movpc_endop(15);
-							case 2: stack_data_d(UInt8, arg_qword(1), arg_dword(9)) = stack_data(UInt8, arg_qword(13)); movpc_endop(22);
-							case 3: stack_data_d(UInt8, arg_qword(1), arg_dword(9)) = stack_data_d(UInt8, arg_qword(13), arg_dword(21)); movpc_endop(26);
-							case 4: stack_data_d(UInt8, arg_qword(1), arg_dword(9)) = static_data(UInt8, arg_qword(13)); movpc_endop(22);
-							case 5: stack_data_d(UInt8, arg_qword(1), arg_dword(9)) = static_data_d(UInt8, arg_qword(13), arg_dword(21)); movpc_endop(26);
-							case 6: stack_data_d(UInt8, arg_qword(1), arg_dword(9)) = register_data(u8, arg_byte(13)); movpc_endop(15);
-							case 7: stack_data_d(UInt8, arg_qword(1), arg_dword(9)) = register_data_d(UInt8, arg_byte(13), arg_dword(14)); movpc_endop(19);
-						} break;
-						case 4: switch (arg_3bits(0, 5)) /* src mode */
-						{
-							case 0: static_data(UInt8, arg_qword(1)) = register(arg_byte(9)).u8; movpc_endop(11);
-							case 1: static_data(UInt8, arg_qword(1)) = arg_byte(9); movpc_endop(11);
-							case 2: static_data(UInt8, arg_qword(1)) = stack_data(UInt8, arg_qword(9)); movpc_endop(18);
-							case 3: static_data(UInt8, arg_qword(1)) = stack_data_d(UInt8, arg_qword(9), arg_dword(17)); movpc_endop(22);
-							case 4: static_data(UInt8, arg_qword(1)) = static_data(UInt8, arg_qword(9)); movpc_endop(18);
-							case 5: static_data(UInt8, arg_qword(1)) = static_data_d(UInt8, arg_qword(9), arg_dword(17)); movpc_endop(22);
-							case 6: static_data(UInt8, arg_qword(1)) = register_data(u8, arg_byte(9)); movpc_endop(11);
-							case 7: static_data(UInt8, arg_qword(1)) = register_data_d(UInt8, arg_byte(9), arg_dword(10)); movpc_endop(15);
-						} break;
-						case 5: switch (arg_3bits(0, 5)) /* src mode */
-						{
-							case 0: static_data_d(UInt8, arg_qword(1), arg_dword(9)) = register(arg_byte(13)).u8; movpc_endop(15);
-							case 1: static_data_d(UInt8, arg_qword(1), arg_dword(9)) = arg_byte(13); movpc_endop(15);
-							case 2: static_data_d(UInt8, arg_qword(1), arg_dword(9)) = stack_data(UInt8, arg_qword(13)); movpc_endop(22);
-							case 3: static_data_d(UInt8, arg_qword(1), arg_dword(9)) = stack_data_d(UInt8, arg_qword(13), arg_dword(17)); movpc_endop(26);
-							case 4: static_data_d(UInt8, arg_qword(1), arg_dword(9)) = static_data(UInt8, arg_qword(13)); movpc_endop(22);
-							case 5: static_data_d(UInt8, arg_qword(1), arg_dword(9)) = static_data_d(UInt8, arg_qword(13), arg_dword(17)); movpc_endop(26);
-							case 6: static_data_d(UInt8, arg_qword(1), arg_dword(9)) = register_data(u8, arg_byte(13)); movpc_endop(15);
-							case 7: static_data_d(UInt8, arg_qword(1), arg_dword(9)) = register_data_d(UInt8, arg_byte(13), arg_dword(10)); movpc_endop(19);
-						} break;
-						case 6: switch (arg_3bits(0, 5)) /* src mode */
-						{
-							case 0: register_data(u8, arg_byte(1)) = register(arg_byte(2)).u8; movpc_endop(4);
-							case 1: register_data(u8, arg_byte(1)) = arg_byte(2); movpc_endop(4);
-							case 2: register_data(u8, arg_byte(1)) = stack_data(UInt8, arg_qword(2)); movpc_endop(11);
-							case 3: register_data(u8, arg_byte(1)) = stack_data_d(UInt8, arg_qword(2), arg_dword(10)); movpc_endop(15);
-							case 4: register_data(u8, arg_byte(1)) = static_data(UInt8, arg_qword(2)); movpc_endop(11);
-							case 5: register_data(u8, arg_byte(1)) = static_data_d(UInt8, arg_qword(2), arg_dword(10)); movpc_endop(15);
-							case 6: register_data(u8, arg_byte(1)) = register_data(u8, arg_byte(2)); movpc_endop(4);
-							case 7: register_data(u8, arg_byte(1)) = register_data_d(UInt8, arg_byte(2), arg_dword(3)); movpc_endop(8);
-						} break;
-						case 7: switch (arg_3bits(0, 5)) /* src mode */
-						{
-							case 0: register_data_d(UInt8, arg_byte(1), arg_dword(2)) = register(arg_byte(6)).u8; movpc_endop(8);
-							case 1: register_data_d(UInt8, arg_byte(1), arg_dword(2)) = arg_byte(6); movpc_endop(8);
-							case 2: register_data_d(UInt8, arg_byte(1), arg_dword(2)) = stack_data(UInt8, arg_qword(6)); movpc_endop(15);
-							case 3: register_data_d(UInt8, arg_byte(1), arg_dword(2)) = stack_data_d(UInt8, arg_qword(6), arg_dword(14)); movpc_endop(19);
-							case 4: register_data_d(UInt8, arg_byte(1), arg_dword(2)) = static_data(UInt8, arg_qword(6)); movpc_endop(15);
-							case 5: register_data_d(UInt8, arg_byte(1), arg_dword(2)) = static_data_d(UInt8, arg_qword(6), arg_dword(14)); movpc_endop(19);
-							case 6: register_data_d(UInt8, arg_byte(1), arg_dword(2)) = register_data(u8, arg_byte(6)); movpc_endop(8);
-							case 7: register_data_d(UInt8, arg_byte(1), arg_dword(2)) = register_data_d(UInt8, arg_byte(6), arg_dword(7)); movpc_endop(12);
-						} break;
-					} break;
-					case 1: switch (arg_3bits(0, 2)) /* dest mode */
-					{
-						case 0: switch (arg_3bits(0, 5)) /* src mode */
-						{
-							case 0: register(arg_byte(1)).u16 = register(arg_byte(2)).u16; movpc_endop(4);
-							case 1: register(arg_byte(1)).u16 = arg_word(2); movpc_endop(5);
-							case 2: register(arg_byte(1)).u16 = stack_data(UInt16, arg_qword(2)); movpc_endop(11);
-							case 3: register(arg_byte(1)).u16 = stack_data_d(UInt16, arg_qword(2), arg_dword(10)); movpc_endop(15);
-							case 4: register(arg_byte(1)).u16 = static_data(UInt16, arg_qword(2)); movpc_endop(11);
-							case 5: register(arg_byte(1)).u16 = static_data_d(UInt16, arg_qword(2), arg_dword(10)); movpc_endop(15);
-							case 6: register(arg_byte(1)).u16 = register_data(u16, arg_byte(2)); movpc_endop(4);
-							case 7: register(arg_byte(1)).u16 = register_data_d(UInt16, arg_byte(2), arg_dword(3)); movpc_endop(8);
-						} break;
-						case 1: movpc_endop(1);
-						case 2: switch (arg_3bits(0, 5)) /* src mode */
-						{
-							case 0: stack_data(UInt16, arg_qword(1)) = register(arg_byte(9)).u16; movpc_endop(11);
-							case 1: stack_data(UInt16, arg_qword(1)) = arg_word(9); movpc_endop(12);
-							case 2: stack_data(UInt16, arg_qword(1)) = stack_data(UInt16, arg_qword(9)); movpc_endop(18);
-							case 3: stack_data(UInt16, arg_qword(1)) = stack_data_d(UInt16, arg_qword(9), arg_dword(17)); movpc_endop(22);
-							case 4: stack_data(UInt16, arg_qword(1)) = static_data(UInt16, arg_qword(9)); movpc_endop(18);
-							case 5: stack_data(UInt16, arg_qword(1)) = static_data_d(UInt16, arg_qword(9), arg_dword(17)); movpc_endop(22);
-							case 6: stack_data(UInt16, arg_qword(1)) = register_data(u16, arg_byte(9)); movpc_endop(11);
-							case 7: stack_data(UInt16, arg_qword(1)) = register_data_d(UInt16, arg_byte(9), arg_dword(10)); movpc_endop(15);
-						} break;
-						case 3: switch (arg_3bits(0, 5)) /* src mode */
-						{
-							case 0: stack_data_d(UInt16, arg_qword(1), arg_dword(9)) = register(arg_byte(13)).u16; movpc_endop(15);
-							case 1: stack_data_d(UInt16, arg_qword(1), arg_dword(9)) = arg_word(13); movpc_endop(16);
-							case 2: stack_data_d(UInt16, arg_qword(1), arg_dword(9)) = stack_data(UInt16, arg_qword(13)); movpc_endop(22);
-							case 3: stack_data_d(UInt16, arg_qword(1), arg_dword(9)) = stack_data_d(UInt16, arg_qword(13), arg_dword(21)); movpc_endop(26);
-							case 4: stack_data_d(UInt16, arg_qword(1), arg_dword(9)) = static_data(UInt16, arg_qword(13)); movpc_endop(22);
-							case 5: stack_data_d(UInt16, arg_qword(1), arg_dword(9)) = static_data_d(UInt16, arg_qword(13), arg_dword(21)); movpc_endop(26);
-							case 6: stack_data_d(UInt16, arg_qword(1), arg_dword(9)) = register_data(u16, arg_byte(13)); movpc_endop(15);
-							case 7: stack_data_d(UInt16, arg_qword(1), arg_dword(9)) = register_data_d(UInt16, arg_byte(13), arg_dword(14)); movpc_endop(19);
-						} break;
-						case 4: switch (arg_3bits(0, 5)) /* src mode */
-						{
-							case 0: static_data(UInt16, arg_qword(1)) = register(arg_byte(9)).u16; movpc_endop(11);
-							case 1: static_data(UInt16, arg_qword(1)) = arg_word(9); movpc_endop(12);
-							case 2: static_data(UInt16, arg_qword(1)) = stack_data(UInt16, arg_qword(9)); movpc_endop(18);
-							case 3: static_data(UInt16, arg_qword(1)) = stack_data_d(UInt16, arg_qword(9), arg_dword(17)); movpc_endop(22);
-							case 4: static_data(UInt16, arg_qword(1)) = static_data(UInt16, arg_qword(9)); movpc_endop(18);
-							case 5: static_data(UInt16, arg_qword(1)) = static_data_d(UInt16, arg_qword(9), arg_dword(17)); movpc_endop(22);
-							case 6: static_data(UInt16, arg_qword(1)) = register_data(u16, arg_byte(9)); movpc_endop(11);
-							case 7: static_data(UInt16, arg_qword(1)) = register_data_d(UInt16, arg_byte(9), arg_dword(10)); movpc_endop(15);
-						} break;
-						case 5: switch (arg_3bits(0, 5)) /* src mode */
-						{
-							case 0: static_data_d(UInt16, arg_qword(1), arg_dword(9)) = register(arg_byte(13)).u16; movpc_endop(15);
-							case 1: static_data_d(UInt16, arg_qword(1), arg_dword(9)) = arg_word(13); movpc_endop(16);
-							case 2: static_data_d(UInt16, arg_qword(1), arg_dword(9)) = stack_data(UInt16, arg_qword(13)); movpc_endop(22);
-							case 3: static_data_d(UInt16, arg_qword(1), arg_dword(9)) = stack_data_d(UInt16, arg_qword(13), arg_dword(17)); movpc_endop(26);
-							case 4: static_data_d(UInt16, arg_qword(1), arg_dword(9)) = static_data(UInt16, arg_qword(13)); movpc_endop(22);
-							case 5: static_data_d(UInt16, arg_qword(1), arg_dword(9)) = static_data_d(UInt16, arg_qword(13), arg_dword(17)); movpc_endop(26);
-							case 6: static_data_d(UInt16, arg_qword(1), arg_dword(9)) = register_data(u16, arg_byte(13)); movpc_endop(15);
-							case 7: static_data_d(UInt16, arg_qword(1), arg_dword(9)) = register_data_d(UInt16, arg_byte(13), arg_dword(10)); movpc_endop(19);
-						} break;
-						case 6: switch (arg_3bits(0, 5)) /* src mode */
-						{
-							case 0: register_data(u16, arg_byte(1)) = register(arg_byte(2)).u16; movpc_endop(4);
-							case 1: register_data(u16, arg_byte(1)) = arg_word(2); movpc_endop(5);
-							case 2: register_data(u16, arg_byte(1)) = stack_data(UInt16, arg_qword(2)); movpc_endop(11);
-							case 3: register_data(u16, arg_byte(1)) = stack_data_d(UInt16, arg_qword(2), arg_dword(10)); movpc_endop(15);
-							case 4: register_data(u16, arg_byte(1)) = static_data(UInt16, arg_qword(2)); movpc_endop(11);
-							case 5: register_data(u16, arg_byte(1)) = static_data_d(UInt16, arg_qword(2), arg_dword(10)); movpc_endop(15);
-							case 6: register_data(u16, arg_byte(1)) = register_data(u16, arg_byte(2)); movpc_endop(4);
-							case 7: register_data(u16, arg_byte(1)) = register_data_d(UInt16, arg_byte(2), arg_dword(3)); movpc_endop(8);
-						} break;
-						case 7: switch (arg_3bits(0, 5)) /* src mode */
-						{
-							case 0: register_data_d(UInt16, arg_byte(1), arg_dword(2)) = register(arg_byte(6)).u16; movpc_endop(8);
-							case 1: register_data_d(UInt16, arg_byte(1), arg_dword(2)) = arg_word(6); movpc_endop(9);
-							case 2: register_data_d(UInt16, arg_byte(1), arg_dword(2)) = stack_data(UInt16, arg_qword(6)); movpc_endop(15);
-							case 3: register_data_d(UInt16, arg_byte(1), arg_dword(2)) = stack_data_d(UInt16, arg_qword(6), arg_dword(14)); movpc_endop(19);
-							case 4: register_data_d(UInt16, arg_byte(1), arg_dword(2)) = static_data(UInt16, arg_qword(6)); movpc_endop(15);
-							case 5: register_data_d(UInt16, arg_byte(1), arg_dword(2)) = static_data_d(UInt16, arg_qword(6), arg_dword(14)); movpc_endop(19);
-							case 6: register_data_d(UInt16, arg_byte(1), arg_dword(2)) = register_data(u16, arg_byte(6)); movpc_endop(8);
-							case 7: register_data_d(UInt16, arg_byte(1), arg_dword(2)) = register_data_d(UInt16, arg_byte(6), arg_dword(7)); movpc_endop(12);
-						} break;
-					} break;
-					case 2: switch (arg_3bits(0, 2)) /* dest mode */
-					{
-						case 0: switch (arg_3bits(0, 5)) /* src mode */
-						{
-							case 0: register(arg_byte(1)).u32 = register(arg_byte(2)).u32; movpc_endop(4);
-							case 1: register(arg_byte(1)).u32 = arg_word(2); movpc_endop(7);
-							case 2: register(arg_byte(1)).u32 = stack_data(UInt32, arg_qword(2)); movpc_endop(11);
-							case 3: register(arg_byte(1)).u32 = stack_data_d(UInt32, arg_qword(2), arg_dword(10)); movpc_endop(15);
-							case 4: register(arg_byte(1)).u32 = static_data(UInt32, arg_qword(2)); movpc_endop(11);
-							case 5: register(arg_byte(1)).u32 = static_data_d(UInt32, arg_qword(2), arg_dword(10)); movpc_endop(15);
-							case 6: register(arg_byte(1)).u32 = register_data(u32, arg_byte(2)); movpc_endop(4);
-							case 7: register(arg_byte(1)).u32 = register_data_d(UInt32, arg_byte(2), arg_dword(3)); movpc_endop(8);
-						} break;
-						case 1: movpc_endop(1);
-						case 2: switch (arg_3bits(0, 5)) /* src mode */
-						{
-							case 0: stack_data(UInt32, arg_qword(1)) = register(arg_byte(9)).u32; movpc_endop(11);
-							case 1: stack_data(UInt32, arg_qword(1)) = arg_word(9); movpc_endop(14);
-							case 2: stack_data(UInt32, arg_qword(1)) = stack_data(UInt32, arg_qword(9)); movpc_endop(18);
-							case 3: stack_data(UInt32, arg_qword(1)) = stack_data_d(UInt32, arg_qword(9), arg_dword(17)); movpc_endop(22);
-							case 4: stack_data(UInt32, arg_qword(1)) = static_data(UInt32, arg_qword(9)); movpc_endop(18);
-							case 5: stack_data(UInt32, arg_qword(1)) = static_data_d(UInt32, arg_qword(9), arg_dword(17)); movpc_endop(22);
-							case 6: stack_data(UInt32, arg_qword(1)) = register_data(u32, arg_byte(9)); movpc_endop(11);
-							case 7: stack_data(UInt32, arg_qword(1)) = register_data_d(UInt32, arg_byte(9), arg_dword(10)); movpc_endop(15);
-						} break;
-						case 3: switch (arg_3bits(0, 5)) /* src mode */
-						{
-							case 0: stack_data_d(UInt32, arg_qword(1), arg_dword(9)) = register(arg_byte(13)).u32; movpc_endop(15);
-							case 1: stack_data_d(UInt32, arg_qword(1), arg_dword(9)) = arg_word(13); movpc_endop(18);
-							case 2: stack_data_d(UInt32, arg_qword(1), arg_dword(9)) = stack_data(UInt32, arg_qword(13)); movpc_endop(22);
-							case 3: stack_data_d(UInt32, arg_qword(1), arg_dword(9)) = stack_data_d(UInt32, arg_qword(13), arg_dword(21)); movpc_endop(26);
-							case 4: stack_data_d(UInt32, arg_qword(1), arg_dword(9)) = static_data(UInt32, arg_qword(13)); movpc_endop(22);
-							case 5: stack_data_d(UInt32, arg_qword(1), arg_dword(9)) = static_data_d(UInt32, arg_qword(13), arg_dword(21)); movpc_endop(26);
-							case 6: stack_data_d(UInt32, arg_qword(1), arg_dword(9)) = register_data(u32, arg_byte(13)); movpc_endop(15);
-							case 7: stack_data_d(UInt32, arg_qword(1), arg_dword(9)) = register_data_d(UInt32, arg_byte(13), arg_dword(14)); movpc_endop(19);
-						} break;
-						case 4: switch (arg_3bits(0, 5)) /* src mode */
-						{
-							case 0: static_data(UInt32, arg_qword(1)) = register(arg_byte(9)).u32; movpc_endop(11);
-							case 1: static_data(UInt32, arg_qword(1)) = arg_word(9); movpc_endop(14);
-							case 2: static_data(UInt32, arg_qword(1)) = stack_data(UInt32, arg_qword(9)); movpc_endop(18);
-							case 3: static_data(UInt32, arg_qword(1)) = stack_data_d(UInt32, arg_qword(9), arg_dword(17)); movpc_endop(22);
-							case 4: static_data(UInt32, arg_qword(1)) = static_data(UInt32, arg_qword(9)); movpc_endop(18);
-							case 5: static_data(UInt32, arg_qword(1)) = static_data_d(UInt32, arg_qword(9), arg_dword(17)); movpc_endop(22);
-							case 6: static_data(UInt32, arg_qword(1)) = register_data(u32, arg_byte(9)); movpc_endop(11);
-							case 7: static_data(UInt32, arg_qword(1)) = register_data_d(UInt32, arg_byte(9), arg_dword(10)); movpc_endop(15);
-						} break;
-						case 5: switch (arg_3bits(0, 5)) /* src mode */
-						{
-							case 0: static_data_d(UInt32, arg_qword(1), arg_dword(9)) = register(arg_byte(13)).u32; movpc_endop(15);
-							case 1: static_data_d(UInt32, arg_qword(1), arg_dword(9)) = arg_word(13); movpc_endop(18);
-							case 2: static_data_d(UInt32, arg_qword(1), arg_dword(9)) = stack_data(UInt32, arg_qword(13)); movpc_endop(22);
-							case 3: static_data_d(UInt32, arg_qword(1), arg_dword(9)) = stack_data_d(UInt32, arg_qword(13), arg_dword(17)); movpc_endop(26);
-							case 4: static_data_d(UInt32, arg_qword(1), arg_dword(9)) = static_data(UInt32, arg_qword(13)); movpc_endop(22);
-							case 5: static_data_d(UInt32, arg_qword(1), arg_dword(9)) = static_data_d(UInt32, arg_qword(13), arg_dword(17)); movpc_endop(26);
-							case 6: static_data_d(UInt32, arg_qword(1), arg_dword(9)) = register_data(u32, arg_byte(13)); movpc_endop(15);
-							case 7: static_data_d(UInt32, arg_qword(1), arg_dword(9)) = register_data_d(UInt32, arg_byte(13), arg_dword(10)); movpc_endop(19);
-						} break;
-						case 6: switch (arg_3bits(0, 5)) /* src mode */
-						{
-							case 0: register_data(u32, arg_byte(1)) = register(arg_byte(2)).u32; movpc_endop(4);
-							case 1: register_data(u32, arg_byte(1)) = arg_word(2); movpc_endop(7);
-							case 2: register_data(u32, arg_byte(1)) = stack_data(UInt32, arg_qword(2)); movpc_endop(11);
-							case 3: register_data(u32, arg_byte(1)) = stack_data_d(UInt32, arg_qword(2), arg_dword(10)); movpc_endop(15);
-							case 4: register_data(u32, arg_byte(1)) = static_data(UInt32, arg_qword(2)); movpc_endop(11);
-							case 5: register_data(u32, arg_byte(1)) = static_data_d(UInt32, arg_qword(2), arg_dword(10)); movpc_endop(15);
-							case 6: register_data(u32, arg_byte(1)) = register_data(u32, arg_byte(2)); movpc_endop(4);
-							case 7: register_data(u32, arg_byte(1)) = register_data_d(UInt32, arg_byte(2), arg_dword(3)); movpc_endop(8);
-						} break;
-						case 7: switch (arg_3bits(0, 5)) /* src mode */
-						{
-							case 0: register_data_d(UInt32, arg_byte(1), arg_dword(2)) = register(arg_byte(6)).u32; movpc_endop(8);
-							case 1: register_data_d(UInt32, arg_byte(1), arg_dword(2)) = arg_word(6); movpc_endop(11);
-							case 2: register_data_d(UInt32, arg_byte(1), arg_dword(2)) = stack_data(UInt32, arg_qword(6)); movpc_endop(15);
-							case 3: register_data_d(UInt32, arg_byte(1), arg_dword(2)) = stack_data_d(UInt32, arg_qword(6), arg_dword(14)); movpc_endop(19);
-							case 4: register_data_d(UInt32, arg_byte(1), arg_dword(2)) = static_data(UInt32, arg_qword(6)); movpc_endop(15);
-							case 5: register_data_d(UInt32, arg_byte(1), arg_dword(2)) = static_data_d(UInt32, arg_qword(6), arg_dword(14)); movpc_endop(19);
-							case 6: register_data_d(UInt32, arg_byte(1), arg_dword(2)) = register_data(u32, arg_byte(6)); movpc_endop(8);
-							case 7: register_data_d(UInt32, arg_byte(1), arg_dword(2)) = register_data_d(UInt32, arg_byte(6), arg_dword(7)); movpc_endop(12);
-						} break;
-					} break;
-					case 3: switch (arg_3bits(0, 2)) /* dest mode */
-					{
-						case 0: switch (arg_3bits(0, 5)) /* src mode */
-						{
-							case 0: register(arg_byte(1)).u64 = register(arg_byte(2)).u64; movpc_endop(4);
-							case 1: register(arg_byte(1)).u64 = arg_word(2); movpc_endop(11);
-							case 2: register(arg_byte(1)).u64 = stack_data(UInt64, arg_qword(2)); movpc_endop(11);
-							case 3: register(arg_byte(1)).u64 = stack_data_d(UInt64, arg_qword(2), arg_dword(10)); movpc_endop(15);
-							case 4: register(arg_byte(1)).u64 = static_data(UInt64, arg_qword(2)); movpc_endop(11);
-							case 5: register(arg_byte(1)).u64 = static_data_d(UInt64, arg_qword(2), arg_dword(10)); movpc_endop(15);
-							case 6: register(arg_byte(1)).u64 = register_data(u64, arg_byte(2)); movpc_endop(4);
-							case 7: register(arg_byte(1)).u64 = register_data_d(UInt64, arg_byte(2), arg_dword(3)); movpc_endop(8);
-						} break;
-						case 1: movpc_endop(1);
-						case 2: switch (arg_3bits(0, 5)) /* src mode */
-						{
-							case 0: stack_data(UInt64, arg_qword(1)) = register(arg_byte(9)).u64; movpc_endop(11);
-							case 1: stack_data(UInt64, arg_qword(1)) = arg_word(9); movpc_endop(18);
-							case 2: stack_data(UInt64, arg_qword(1)) = stack_data(UInt64, arg_qword(9)); movpc_endop(18);
-							case 3: stack_data(UInt64, arg_qword(1)) = stack_data_d(UInt64, arg_qword(9), arg_dword(17)); movpc_endop(22);
-							case 4: stack_data(UInt64, arg_qword(1)) = static_data(UInt64, arg_qword(9)); movpc_endop(18);
-							case 5: stack_data(UInt64, arg_qword(1)) = static_data_d(UInt64, arg_qword(9), arg_dword(17)); movpc_endop(22);
-							case 6: stack_data(UInt64, arg_qword(1)) = register_data(u64, arg_byte(9)); movpc_endop(11);
-							case 7: stack_data(UInt64, arg_qword(1)) = register_data_d(UInt64, arg_byte(9), arg_dword(10)); movpc_endop(15);
-						} break;
-						case 3: switch (arg_3bits(0, 5)) /* src mode */
-						{
-							case 0: stack_data_d(UInt64, arg_qword(1), arg_dword(9)) = register(arg_byte(13)).u64; movpc_endop(15);
-							case 1: stack_data_d(UInt64, arg_qword(1), arg_dword(9)) = arg_word(13); movpc_endop(22);
-							case 2: stack_data_d(UInt64, arg_qword(1), arg_dword(9)) = stack_data(UInt64, arg_qword(13)); movpc_endop(22);
-							case 3: stack_data_d(UInt64, arg_qword(1), arg_dword(9)) = stack_data_d(UInt64, arg_qword(13), arg_dword(21)); movpc_endop(26);
-							case 4: stack_data_d(UInt64, arg_qword(1), arg_dword(9)) = static_data(UInt64, arg_qword(13)); movpc_endop(22);
-							case 5: stack_data_d(UInt64, arg_qword(1), arg_dword(9)) = static_data_d(UInt64, arg_qword(13), arg_dword(21)); movpc_endop(26);
-							case 6: stack_data_d(UInt64, arg_qword(1), arg_dword(9)) = register_data(u64, arg_byte(13)); movpc_endop(15);
-							case 7: stack_data_d(UInt64, arg_qword(1), arg_dword(9)) = register_data_d(UInt64, arg_byte(13), arg_dword(14)); movpc_endop(19);
-						} break;
-						case 4: switch (arg_3bits(0, 5)) /* src mode */
-						{
-							case 0: static_data(UInt64, arg_qword(1)) = register(arg_byte(9)).u64; movpc_endop(11);
-							case 1: static_data(UInt64, arg_qword(1)) = arg_word(9); movpc_endop(18);
-							case 2: static_data(UInt64, arg_qword(1)) = stack_data(UInt64, arg_qword(9)); movpc_endop(18);
-							case 3: static_data(UInt64, arg_qword(1)) = stack_data_d(UInt64, arg_qword(9), arg_dword(17)); movpc_endop(22);
-							case 4: static_data(UInt64, arg_qword(1)) = static_data(UInt64, arg_qword(9)); movpc_endop(18);
-							case 5: static_data(UInt64, arg_qword(1)) = static_data_d(UInt64, arg_qword(9), arg_dword(17)); movpc_endop(22);
-							case 6: static_data(UInt64, arg_qword(1)) = register_data(u64, arg_byte(9)); movpc_endop(11);
-							case 7: static_data(UInt64, arg_qword(1)) = register_data_d(UInt64, arg_byte(9), arg_dword(10)); movpc_endop(15);
-						} break;
-						case 5: switch (arg_3bits(0, 5)) /* src mode */
-						{
-							case 0: static_data_d(UInt64, arg_qword(1), arg_dword(9)) = register(arg_byte(13)).u64; movpc_endop(15);
-							case 1: static_data_d(UInt64, arg_qword(1), arg_dword(9)) = arg_word(13); movpc_endop(22);
-							case 2: static_data_d(UInt64, arg_qword(1), arg_dword(9)) = stack_data(UInt64, arg_qword(13)); movpc_endop(22);
-							case 3: static_data_d(UInt64, arg_qword(1), arg_dword(9)) = stack_data_d(UInt64, arg_qword(13), arg_dword(17)); movpc_endop(26);
-							case 4: static_data_d(UInt64, arg_qword(1), arg_dword(9)) = static_data(UInt64, arg_qword(13)); movpc_endop(22);
-							case 5: static_data_d(UInt64, arg_qword(1), arg_dword(9)) = static_data_d(UInt64, arg_qword(13), arg_dword(17)); movpc_endop(26);
-							case 6: static_data_d(UInt64, arg_qword(1), arg_dword(9)) = register_data(u64, arg_byte(13)); movpc_endop(15);
-							case 7: static_data_d(UInt64, arg_qword(1), arg_dword(9)) = register_data_d(UInt64, arg_byte(13), arg_dword(10)); movpc_endop(19);
-						} break;
-						case 6: switch (arg_3bits(0, 5)) /* src mode */
-						{
-							case 0: register_data(u64, arg_byte(1)) = register(arg_byte(2)).u64; movpc_endop(4);
-							case 1: register_data(u64, arg_byte(1)) = arg_word(2); movpc_endop(11);
-							case 2: register_data(u64, arg_byte(1)) = stack_data(UInt64, arg_qword(2)); movpc_endop(11);
-							case 3: register_data(u64, arg_byte(1)) = stack_data_d(UInt64, arg_qword(2), arg_dword(10)); movpc_endop(15);
-							case 4: register_data(u64, arg_byte(1)) = static_data(UInt64, arg_qword(2)); movpc_endop(11);
-							case 5: register_data(u64, arg_byte(1)) = static_data_d(UInt64, arg_qword(2), arg_dword(10)); movpc_endop(15);
-							case 6: register_data(u64, arg_byte(1)) = register_data(u64, arg_byte(2)); movpc_endop(4);
-							case 7: register_data(u64, arg_byte(1)) = register_data_d(UInt64, arg_byte(2), arg_dword(3)); movpc_endop(8);
-						} break;
-						case 7: switch (arg_3bits(0, 5)) /* src mode */
-						{
-							case 0: register_data_d(UInt64, arg_byte(1), arg_dword(2)) = register(arg_byte(6)).u64; movpc_endop(8);
-							case 1: register_data_d(UInt64, arg_byte(1), arg_dword(2)) = arg_word(6); movpc_endop(15);
-							case 2: register_data_d(UInt64, arg_byte(1), arg_dword(2)) = stack_data(UInt64, arg_qword(6)); movpc_endop(15);
-							case 3: register_data_d(UInt64, arg_byte(1), arg_dword(2)) = stack_data_d(UInt64, arg_qword(6), arg_dword(14)); movpc_endop(19);
-							case 4: register_data_d(UInt64, arg_byte(1), arg_dword(2)) = static_data(UInt64, arg_qword(6)); movpc_endop(15);
-							case 5: register_data_d(UInt64, arg_byte(1), arg_dword(2)) = static_data_d(UInt64, arg_qword(6), arg_dword(14)); movpc_endop(19);
-							case 6: register_data_d(UInt64, arg_byte(1), arg_dword(2)) = register_data(u64, arg_byte(6)); movpc_endop(8);
-							case 7: register_data_d(UInt64, arg_byte(1), arg_dword(2)) = register_data_d(UInt64, arg_byte(6), arg_dword(7)); movpc_endop(12);
-						} break;
-					} break;
+					case 0: support::mmb<UInt8>(state); break_endop();
+					case 1: support::mmb<UInt16>(state); break_endop();
+					case 2: support::mmb<UInt32>(state); break_endop();
+					case 3: support::mmb<UInt64>(state); break_endop();
 				}
+			end_opcode();
+
+			opcode(Opcode::LAS)
+				switch (arg_2bits(0, 0))
+				{
+					case 0: support::las<UInt8>(state); break_endop();
+					case 1: support::las<UInt16>(state); break_endop();
+					case 2: support::las<UInt32>(state); break_endop();
+					case 3: support::las<UInt64>(state); break_endop();
+				}
+			end_opcode();
+
+			opcode(Opcode::LEA)
+				switch (arg_2bits(0, 0))
+				{
+					case 0: support::lea<UInt8>(state); break_endop();
+					case 1: support::lea<UInt16>(state); break_endop();
+					case 2: support::lea<UInt32>(state); break_endop();
+					case 3: support::lea<UInt64>(state); break_endop();
+				}
+			end_opcode();
+
+			opcode(Opcode::CST)
+				Register* reg = &register(arg_byte(1));
+				switch (arg_4bits(0, 0))
+				{
+					case 0: op_cast_type(reg, u8);
+					case 1: op_cast_type(reg, u16);
+					case 2: op_cast_type(reg, u32);
+					case 3: op_cast_type(reg, u64);
+					case 4: op_cast_type(reg, s8);
+					case 5: op_cast_type(reg, s16);
+					case 6: op_cast_type(reg, s32);
+					case 7: op_cast_type(reg, s64);
+					case 8: op_cast_type(reg, f32);
+					case 9: op_cast_type(reg, f64);
+				}
+			end_opcode();
+
+			opcode(Opcode::ADD)
+				op_binary(+, arg_byte(1), arg_byte(2));
 			end_opcode();
 		}
 	}

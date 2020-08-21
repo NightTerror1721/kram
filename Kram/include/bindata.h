@@ -137,7 +137,6 @@ namespace kram::bin
 }
 
 
-
 namespace kram::bin
 {
 	struct StaticValue
@@ -147,11 +146,8 @@ namespace kram::bin
 		void* data;
 	};
 
-	struct Chunk
+	struct Function
 	{
-		Size size;
-		void* data;
-
 		UInt8 parameterCount;
 		UInt8 registerCount;
 		Size stackSize;
@@ -159,14 +155,23 @@ namespace kram::bin
 		const DataType** parameterTypes;
 		const DataType* returnType;
 
+		void* code;
+	};
+
+	struct Chunk
+	{
+		Size size;
+		void* data;
+
 		Size typeCount;
 		Size staticCount;
+		Size functionCount;
 		Size childChunkCount;
 		Size codeSize;
 		
 		const DataType* types;
 		StaticValue* statics;
+		Function* functions;
 		Chunk* childChunks;
-		void* code;
 	};
 }
