@@ -87,6 +87,60 @@ namespace kram::op
 			  *		4: Static data + delta
 			  */
 
+		NEW, /* [arg_len:2|dst_mode:3|add_ref:1|<ignore>:2], [dst:8/16/32/64], [size:8/16/32/64]
+			  * Allocate memory block with "size" bytes and store address into "dst"
+			  * Argument lengths:
+			  *		0: 1 byte (8 bits)
+			  *		1: 2 bytes (16 bits)
+			  *		2: 4 bytes (32 bits)
+			  *		3: 8 bytes (64 bits)
+			  * Avaliable modes:
+			  *		0: Register
+			  *		1: <not used>
+			  *		2: Stack data location
+			  *		3: Stack data location + delta
+			  *		4: Static data location
+			  *		5: Static data location + delta
+			  *		6: Location at register
+			  *		7: Location at register + delta
+			  */
+
+		DEL, /* [arg_len:2|src_mode:3|<ignore>:3], [src:8/16/32/64]
+			  * Free memory block with address allocated in "src"
+			  * Argument lengths:
+			  *		0: 1 byte (8 bits)
+			  *		1: 2 bytes (16 bits)
+			  *		2: 4 bytes (32 bits)
+			  *		3: 8 bytes (64 bits)
+			  * Avaliable modes:
+			  *		0: Register
+			  *		1: <not used>
+			  *		2: Stack data location
+			  *		3: Stack data location + delta
+			  *		4: Static data location
+			  *		5: Static data location + delta
+			  *		6: Location at register
+			  *		7: Location at register + delta
+			  */
+
+		MHR, /* [arg_len:2|dst_mode:3|is_inc:1|<ignore>:2], [target:8/16/32/64]
+			  * Modify (increase or decrease) heap block memory reference counter from "target"
+			  * Argument lengths:
+			  *		0: 1 byte (8 bits)
+			  *		1: 2 bytes (16 bits)
+			  *		2: 4 bytes (32 bits)
+			  *		3: 8 bytes (64 bits)
+			  * Avaliable modes:
+			  *		0: Register
+			  *		1: <not used>
+			  *		2: Stack data location
+			  *		3: Stack data location + delta
+			  *		4: Static data location
+			  *		5: Static data location + delta
+			  *		6: Location at register
+			  *		7: Location at register + delta
+			  */
+
 		CST, /* [dest_type:4|src_type:4], [register:8]
 			  * Cast register value into new type
 			  * Available types:
@@ -186,15 +240,25 @@ namespace kram::op
 	class InstructionBuilder
 	{
 	private:
+		struct Node;
+
+	private:
+		typedef Node* Location;
 		struct Node
 		{
-			Instruction instruction;
-			Node* next;
-			Node* prev;
-		};
+			friend class InstructionBuilder;
+		private:
+			Instruction _instruction;
+			Node* _next = nullptr;
+			Node* _prev = nullptr;
 
-	public:
-		typedef Node* Location;
+		public:
+			inline Location next() { return _next; }
+			inline Location prev() { return _prev; }
+
+			inline bool has_next() { return _next; }
+			inline bool has_prev() { return _prev; }
+		};
 
 	private:
 		Node* _head;
@@ -203,6 +267,8 @@ namespace kram::op
 
 	public:
 		InstructionBuilder();
+		InstructionBuilder(const std::vector<Instruction>& insts);
+		InstructionBuilder(std::vector<Instruction>&& insts);
 
 		Location push_front(const Instruction& inst);
 		Location push_front(Instruction&& inst);
@@ -219,11 +285,51 @@ namespace kram::op
 		Location insert_after(Location position, const Instruction& inst);
 		Location insert_after(Location position, Instruction&& inst);
 
-		inline Instruction& front() { return _head->instruction; }
-		inline const Instruction& front() const { return _head->instruction; }
+		void move_before(Location position, Location target);
+		void move_after(Location position, Location target);
+		void move(Location position, int delta);
 
-		inline Instruction& back() { return _tail->instruction; }
-		inline const Instruction& back() const { return _tail->instruction; }
+		void erase(Location position);
+
+		void swap(Location l0, Location l1);
+
+		inline Instruction& front() { return _head->_instruction; }
+		inline const Instruction& front() const { return _head->_instruction; }
+
+		inline Instruction& back() { return _tail->_instruction; }
+		inline const Instruction& back() const { return _tail->_instruction; }
+
+		inline Size size() const { return _size; }
+		inline bool empty() const { return !_size; }
+
+	public:
+		Location push_front(InstructionBuilder&& builder);
+		Location push_back(InstructionBuilder&& builder);
+		Location insert(Location position, InstructionBuilder&& builder);
+		Location insert_before(Location position, InstructionBuilder&& builder);
+		Location insert_after(Location position, InstructionBuilder&& builder);
+
+		inline Location push_front(const InstructionBuilder& builder) { return push_front(InstructionBuilder(builder)); }
+		inline Location push_back(const InstructionBuilder& builder) { return push_back(InstructionBuilder(builder)); }
+		inline Location insert(Location position, const InstructionBuilder& builder) { return insert(position, InstructionBuilder(builder)); }
+		inline Location insert_before(Location position, const InstructionBuilder& builder) { return insert_before(position, InstructionBuilder(builder)); }
+		inline Location insert_after(Location position, const InstructionBuilder& builder) { return insert_after(position, InstructionBuilder(builder)); }
+
+	public:
+		inline Location push_front(const std::vector<Instruction>& insts) { return push_front(InstructionBuilder(insts)); }
+		inline Location push_front(std::vector<Instruction>&& insts) { return push_front(InstructionBuilder(std::move(insts))); }
+
+		inline Location push_back(const std::vector<Instruction>& insts) { return push_back(InstructionBuilder(insts)); }
+		inline Location push_back(std::vector<Instruction>&& insts) { return push_back(InstructionBuilder(std::move(insts))); }
+
+		inline Location insert(Location position, const std::vector<Instruction>& insts) { return insert(position, InstructionBuilder(insts)); }
+		inline Location insert(Location position, std::vector<Instruction>&& insts) { return insert(position, InstructionBuilder(std::move(insts))); }
+
+		inline Location insert_before(Location position, const std::vector<Instruction>& insts) { return insert_before(position, InstructionBuilder(insts)); }
+		inline Location insert_before(Location position, std::vector<Instruction>&& insts) { return insert_before(position, InstructionBuilder(std::move(insts))); }
+
+		inline Location insert_after(Location position, const std::vector<Instruction>& insts) { return insert_after(position, InstructionBuilder(insts)); }
+		inline Location insert_after(Location position, std::vector<Instruction>&& insts) { return insert_after(position, InstructionBuilder(std::move(insts))); }
 
 	private:
 		void _destroy();
@@ -250,4 +356,41 @@ namespace kram::op
 		inline InstructionBuilder& operator= (const InstructionBuilder& right) { return _copy(right, true); }
 		inline InstructionBuilder& operator= (InstructionBuilder&& right) noexcept { return _move(std::move(right), true); }
 	};
+}
+
+namespace kram::op::build
+{
+	enum class ArgumentMode { Byte, Word, DoubleWord, QuadWord };
+
+	enum class DataSize { Byte, Word, DoubleWord, QuadWord };
+
+	enum class DataType
+	{
+		SignedByte, SignedWord, SignedDoubleWord, SignedQuadWord,
+		UnsignedByte, UnsignedWord, UnsignedDoubleWord, UnsignedQuadWord,
+		FloatingDecimal, DoubleDecimal
+	};
+
+	enum class LocationMode
+	{
+		Register,
+		Immediate,
+		Stack,
+		StackDelta,
+		Static,
+		StaticDelta,
+		AddressInRegister,
+		AddressInRegisterDelta
+	};
+
+	Instruction mov(
+		DataSize dataSize,
+		LocationMode destLoc,
+		LocationMode srcLoc,
+		UInt64 dest,
+		UInt64 destDelta,
+		UInt64 src,
+		UInt64 srcDelta,
+		ArgumentMode argMode = scast(ArgumentMode, -1)
+	);
 }

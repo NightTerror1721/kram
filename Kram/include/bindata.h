@@ -150,6 +150,7 @@ namespace kram::bin
 	{
 		UInt8 parameterCount;
 		UInt8 registerCount;
+		Size dataCount;
 		Size stackSize;
 
 		const DataType** parameterTypes;

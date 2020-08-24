@@ -32,9 +32,9 @@ namespace kram::runtime
 		op::Opcode* inst;
 		bin::Chunk* chunk;
 
-		StackUnit* top;
-		Register* regs;
-		StackUnit* data;
+		std::ptrdiff_t top;
+		std::ptrdiff_t regs;
+		std::ptrdiff_t data;
 
 		RegisterOffset returnRegisterOffset;
 
@@ -55,6 +55,7 @@ namespace kram::runtime
 	struct RuntimeState
 	{
 		Stack* stack;
+		Heap* heap;
 
 		bin::Chunk* chunk;
 		op::Opcode* inst;
@@ -63,10 +64,14 @@ namespace kram::runtime
 
 		ErrorCode error;
 
-		RuntimeState(Stack* stack);
+		RuntimeState(Stack* stack, Heap* heap);
 	};
 
-	void execute(Stack* stack, bin::Chunk* chunk, FunctionOffset function);
+	void _build_stack(Stack* stack, Size size);
+	void _resize_stack(Stack* stack, Size extra = 0);
+	void _destroy_stack(Stack* stack);
+
+	void execute(KramState* kstate, bin::Chunk* chunk, FunctionOffset function);
 }
 
 

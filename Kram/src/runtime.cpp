@@ -1,6 +1,6 @@
 #include "runtime.h"
 
-#define rcast(_Type, _Value) reinterpret_cast<_Type>(_Value)
+#include "vm.h"
 
 using namespace kram::bin;
 using kram::op::Opcode;
@@ -9,13 +9,16 @@ using kram::op::Opcode;
 
 namespace kram::runtime
 {
-	RuntimeState::RuntimeState(Stack* stack) :
+	RuntimeState::RuntimeState(Stack* stack, Heap* heap) :
 		stack{ stack },
+		heap{ heap },
 		chunk{ nullptr },
 		inst{ nullptr },
 		exit{ false },
 		error{ ErrorCode::OK }
 	{}
+
+	static forceinline bool need_resize_stack(Stack* stack, Size extra = 0) { return (stack->roof - stack->top + static_cast<Int64>(extra)) < ((stack->roof - stack->base) / 2); }
 
 	static void call_chunk(RuntimeState* state, ChunkOffset chunkOffset, FunctionOffset functionOffset, RegisterOffset retRegOffset)
 	{
@@ -27,15 +30,17 @@ namespace kram::runtime
 		info->inst = state->inst;
 		info->chunk = state->chunk;
 
-		info->top = stack->top;
-		info->regs = stack->regs;
-		info->data = stack->data;
+		info->top = stack->top - stack->base;
+		info->regs = rcast(StackUnit*, stack->regs) - stack->base;
+		info->data = stack->data - stack->base;
 
 		info->returnRegisterOffset = retRegOffset;
 
+		if (need_resize_stack(stack, function->stackSize))
+			_resize_stack(stack, function->stackSize);
 
 		stack->data = rcast(StackUnit*, info + 1);
-		stack->regs = rcast(Register*, stack->regs + function->stackSize);
+		stack->regs = rcast(Register*, stack->regs + function->dataCount);
 		stack->top = rcast(StackUnit*, stack->data + function->registerCount);
 
 		state->chunk = chunk;
@@ -48,9 +53,9 @@ namespace kram::runtime
 		CallInfo* info = stack->cinfo;
 		auto rr = stack->regs[retRegOffset].reg;
 		
-		stack->top = info->top;
-		stack->regs = info->regs;
-		stack->data = info->data;
+		stack->top = stack->base + info->top;
+		stack->regs = rcast(Register*, stack->base + info->regs);
+		stack->data = stack->base + info->data;
 		stack->cinfo = rcast(CallInfo*, stack->data) - 1;
 
 		state->chunk = info->chunk;
@@ -58,6 +63,43 @@ namespace kram::runtime
 
 		if(!(state->exit = !state->inst))
 			stack->regs[info->returnRegisterOffset].reg = rr;
+	}
+
+	void _build_stack(Stack* stack, Size size)
+	{
+		stack->base = new StackUnit[size];
+		stack->roof = stack->base + size;
+
+		stack->top = stack->data = stack->base;
+		stack->regs = rcast(Register*, stack->base);
+		stack->cinfo = rcast(CallInfo*, stack->base);
+	}
+	void _resize_stack(Stack* stack, Size extra)
+	{
+		Size size = static_cast<Size>(stack->roof - stack->base);
+
+		StackUnit* old = stack->base;
+		std::ptrdiff_t top = stack->top - old;
+		std::ptrdiff_t regs = rcast(StackUnit*, stack->regs) - old;
+		std::ptrdiff_t data = stack->data - old;
+		std::ptrdiff_t cinfo = rcast(StackUnit*, stack->cinfo) - old;
+
+		stack->base = new StackUnit[size * 2 + extra];
+		stack->roof = stack->base + (size * 2 + extra);
+
+		std::memcpy(stack->base, old, size);
+
+		stack->top = stack->base + top;
+		stack->regs = rcast(Register*, stack->base + regs);
+		stack->data = stack->base + data;
+		stack->cinfo = rcast(CallInfo*, stack->base + cinfo);
+
+		delete old;
+	}
+	void _destroy_stack(Stack* stack)
+	{
+		delete stack->base;
+		std::memset(stack, 0, sizeof(*stack));
 	}
 }
 
@@ -85,8 +127,6 @@ namespace kram::runtime
 #define static_data_d(_Type, _Idx, _Delta) *static_data_ad(_Type, _Idx, _Delta)
 
 #define stack_arg_data(_Type, _Idx) *rcast(_Type*, state.stack->top + (sizeof(CallInfo) + (_Idx)))
-
-#define scast(_Type, _Value) static_cast<_Type>(_Value)
 
 #define arg_byte(_Idx) (rcast(UInt8*, state.inst)[_Idx])
 #define arg_word(_Idx) (*rcast(UInt16*, state.inst + (_Idx)))
@@ -182,13 +222,21 @@ namespace kram::runtime::support
 	template<typename _Ty, unsigned int _Idx, typename _ShiftType, unsigned int _ShiftAmount>
 	forceinline _Ty sarg(RuntimeState& state) { return *rcast(_Ty*, state.inst + _Idx + (sizeof(_ShiftType) * _ShiftAmount - _ShiftAmount)); }
 
-	template<typename _ArgMode, typename _DataSize, unsigned int _ArgOffset>
+	template<typename _ArgMode, typename _DataSize, unsigned int _ArgOffset, bool _ValidImm>
 	forceinline int mov_access(RuntimeState& state, UInt8 mode, _DataSize** out)
 	{
 		switch (mode)
 		{
 			case 0: return (*out = reg<_DataSize>(state, arg<UInt8, _ArgOffset>(state))), _ArgOffset + 1;
-			case 1: return (*out = &ref_arg<_DataSize, _ArgOffset>(state)), _ArgOffset + sizeof(_DataSize);
+			case 1:
+				if constexpr (_ValidImm)
+				{
+					return (*out = &ref_arg<_DataSize, _ArgOffset>(state)), _ArgOffset + sizeof(_DataSize);
+				}
+				else
+				{
+					return 0;
+				}
 			case 2: return (*out = a_data<_DataSize, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state))), _ArgOffset + sizeof(_ArgMode);
 			case 3: return (*out = a_data<_DataSize, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state), sarg<_ArgMode, _ArgOffset + 1, _ArgMode, 1>(state))), _ArgOffset + (sizeof(_ArgMode) * 2);
 			case 4: return (*out = s_data<_DataSize, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state))), _ArgOffset + sizeof(_ArgMode);
@@ -236,29 +284,29 @@ namespace kram::runtime::support
 			case 0: {
 				UInt8* src;
 				UInt8* dst;
-				move_pc((mov_access<_ArgMode, UInt8, 1U>(state, arg_3bits(0, 2), &dst)) + 1LL);
-				move_pc((mov_access<_ArgMode, UInt8, 0U>(state, arg_3bits(0, 5), &src)));
+				move_pc((mov_access<_ArgMode, UInt8, 1U, false>(state, arg_3bits(0, 2), &dst)) + 1LL);
+				move_pc((mov_access<_ArgMode, UInt8, 0U, true>(state, arg_3bits(0, 5), &src)));
 				*dst = *src;
 			} return;
 			case 1: {
 				UInt16* src;
 				UInt16* dst;
-				move_pc((mov_access<_ArgMode, UInt16, 1U>(state, arg_3bits(0, 2), &dst)) + 1LL);
-				move_pc((mov_access<_ArgMode, UInt16, 0U>(state, arg_3bits(0, 5), &src)));
+				move_pc((mov_access<_ArgMode, UInt16, 1U, false>(state, arg_3bits(0, 2), &dst)) + 1LL);
+				move_pc((mov_access<_ArgMode, UInt16, 0U, true>(state, arg_3bits(0, 5), &src)));
 				*dst = *src;
 			} return;
 			case 2: {
 				UInt32* src;
 				UInt32* dst;
-				move_pc((mov_access<_ArgMode, UInt32, 1U>(state, arg_3bits(0, 2), &dst)) + 1LL);
-				move_pc((mov_access<_ArgMode, UInt32, 0U>(state, arg_3bits(0, 5), &src)));
+				move_pc((mov_access<_ArgMode, UInt32, 1U, false>(state, arg_3bits(0, 2), &dst)) + 1LL);
+				move_pc((mov_access<_ArgMode, UInt32, 0U, true>(state, arg_3bits(0, 5), &src)));
 				*dst = *src;
 			} return;
 			case 3: {
 				UInt64* src;
 				UInt64* dst;
-				move_pc((mov_access<_ArgMode, UInt64, 1U>(state, arg_3bits(0, 2), &dst)) + 1LL);
-				move_pc((mov_access<_ArgMode, UInt64, 0U>(state, arg_3bits(0, 5), &src)));
+				move_pc((mov_access<_ArgMode, UInt64, 1U, false>(state, arg_3bits(0, 2), &dst)) + 1LL);
+				move_pc((mov_access<_ArgMode, UInt64, 0U, true>(state, arg_3bits(0, 5), &src)));
 				*dst = *src;
 			} return;
 		}
@@ -283,28 +331,28 @@ namespace kram::runtime::support
 				UInt8* src;
 				UInt8* dst;
 				dst = aa_data<UInt8, _ArgMode>(state, arg<_ArgMode, 1U>(state));
-				move_pc((mov_access<_ArgMode, UInt8, 1U + sizeof(_ArgMode)>(state, arg_3bits(0, 4), &src)) + (1LL + sizeof(_ArgMode)));
+				move_pc((mov_access<_ArgMode, UInt8, 1U + sizeof(_ArgMode), true>(state, arg_3bits(0, 4), &src)) + (1LL + sizeof(_ArgMode)));
 				*dst = *src;
 			} return;
 			case 1: {
 				UInt16* src;
 				UInt16* dst;
 				dst = aa_data<UInt16, _ArgMode>(state, arg<_ArgMode, 1U>(state));
-				move_pc((mov_access<_ArgMode, UInt16, 1U + sizeof(_ArgMode)>(state, arg_3bits(0, 4), &src)) + (1LL + sizeof(_ArgMode)));
+				move_pc((mov_access<_ArgMode, UInt16, 1U + sizeof(_ArgMode), true>(state, arg_3bits(0, 4), &src)) + (1LL + sizeof(_ArgMode)));
 				*dst = *src;
 			} return;
 			case 2: {
 				UInt32* src;
 				UInt32* dst;
 				dst = aa_data<UInt32, _ArgMode>(state, arg<_ArgMode, 1U>(state));
-				move_pc((mov_access<_ArgMode, UInt32, 1U + sizeof(_ArgMode)>(state, arg_3bits(0, 4), &src)) + (1LL + sizeof(_ArgMode)));
+				move_pc((mov_access<_ArgMode, UInt32, 1U + sizeof(_ArgMode), true>(state, arg_3bits(0, 4), &src)) + (1LL + sizeof(_ArgMode)));
 				*dst = *src;
 			} return;
 			case 3: {
 				UInt64* src;
 				UInt64* dst;
 				dst = aa_data<UInt64, _ArgMode>(state, arg<_ArgMode, 1U>(state));
-				move_pc((mov_access<_ArgMode, UInt64, 1U + sizeof(_ArgMode)>(state, arg_3bits(0, 4), &src)) + (1LL + sizeof(_ArgMode)));
+				move_pc((mov_access<_ArgMode, UInt64, 1U + sizeof(_ArgMode), true>(state, arg_3bits(0, 4), &src)) + (1LL + sizeof(_ArgMode)));
 				*dst = *src;
 			} return;
 		}
@@ -315,12 +363,41 @@ namespace kram::runtime::support
 	{
 		move_pc((lea_access<_ArgMode, 2U>(state, arg_3bits(0, 4), &(state.stack->regs[arg<UInt8, 1>(state)].addr))) + 2LL);
 	}
+
+	template<typename _ArgMode>
+	forceinline void new_(RuntimeState& state)
+	{
+		void** dst;
+		bool add_reg = arg_1bit(0, 5);
+		move_pc((mov_access<_ArgMode, void*, 1U, false>(state, arg_3bits(0, 2), &dst)) + 1LL);
+		*dst = state.heap->malloc(arg<_ArgMode, 0U>(state), add_reg);
+		move_pc(sizeof(_ArgMode));
+	}
+
+	template<typename _ArgMode>
+	forceinline void del(RuntimeState& state)
+	{
+		void** src;
+		move_pc((mov_access<_ArgMode, void*, 1U, false>(state, arg_3bits(0, 2), &src)) + 1LL);
+		state.heap->free(*src);
+	}
+
+	template<typename _ArgMode>
+	forceinline void mhr(RuntimeState& state)
+	{
+		void** target;
+		bool is_inc = arg_1bit(0, 5);
+		move_pc((mov_access<_ArgMode, void*, 1U, false>(state, arg_3bits(0, 2), &target)) + 1LL);
+		if (is_inc)
+			Heap::increase_ref(*target);
+		else Heap::decrease_ref(*target);
+	}
 }
 
 
-void kram::runtime::execute(Stack* stack, Chunk* chunk, FunctionOffset function)
+void kram::runtime::execute(KramState* kstate, Chunk* chunk, FunctionOffset function)
 {
-	RuntimeState state{ stack };
+	RuntimeState state{ &kstate->_rstack, kstate };
 	call_chunk(&state, SELF_CHUNK, function, 0);
 
 	for (;;)
@@ -375,6 +452,36 @@ void kram::runtime::execute(Stack* stack, Chunk* chunk, FunctionOffset function)
 					case 1: support::lea<UInt16>(state); break_endop();
 					case 2: support::lea<UInt32>(state); break_endop();
 					case 3: support::lea<UInt64>(state); break_endop();
+				}
+			end_opcode();
+
+			opcode(Opcode::NEW)
+				switch (arg_2bits(0, 0))
+				{
+					case 0: support::new_<UInt8>(state); break_endop();
+					case 1: support::new_<UInt16>(state); break_endop();
+					case 2: support::new_<UInt32>(state); break_endop();
+					case 3: support::new_<UInt64>(state); break_endop();
+				}
+			end_opcode();
+
+			opcode(Opcode::DEL)
+				switch (arg_2bits(0, 0))
+				{
+					case 0: support::del<UInt8>(state); break_endop();
+					case 1: support::del<UInt16>(state); break_endop();
+					case 2: support::del<UInt32>(state); break_endop();
+					case 3: support::del<UInt64>(state); break_endop();
+				}
+			end_opcode();
+
+			opcode(Opcode::MHR)
+				switch (arg_2bits(0, 0))
+				{
+					case 0: support::mhr<UInt8>(state); break_endop();
+					case 1: support::mhr<UInt16>(state); break_endop();
+					case 2: support::mhr<UInt32>(state); break_endop();
+					case 3: support::mhr<UInt64>(state); break_endop();
 				}
 			end_opcode();
 

@@ -150,6 +150,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="src\bindata.cpp" />
+    <ClCompile Include="src\heap.cpp" />
     <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\native_mem.c" />
     <ClCompile Include="src\opcodes.cpp" />
@@ -159,6 +160,7 @@
   <ItemGroup>
     <ClInclude Include="include\bindata.h" />
     <ClInclude Include="include\common.h" />
+    <ClInclude Include="include\heap.h" />
     <ClInclude Include="include\native_mem.h" />
     <ClInclude Include="include\opcodes.h" />
     <ClInclude Include="include\runtime.h" />

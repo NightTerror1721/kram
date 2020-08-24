@@ -25,7 +25,8 @@ namespace kram
 
 	typedef std::size_t Size;
 
-	//typedef UInt64 Register;
+	class KramState;
+	class Heap;
 
 	union Register
 	{
@@ -88,6 +89,11 @@ namespace kram::types
 
 namespace kram::utils
 {
+	constexpr Size RuntimeStackDefaultSize = 1024 * 1024 * 8;
+}
+
+namespace kram::utils
+{
 	inline char* c_str_copy(char* dest, const char* source)
 	{
 		#pragma warning(suppress : 4996)
@@ -105,6 +111,26 @@ namespace kram::utils
 	{
 		return static_cast<_Ty>((value >> _BitIdx) & ((0x1 << (_BitCount + 1)) - 1));
 	}
+
+	template<unsigned int _BitIdx, unsigned int _BitCount, typename _Ty = UInt8>
+	constexpr _Ty set_bits(_Ty base, _Ty bits)
+	{
+		_Ty mask = ((0x1 << (_BitCount + 1)) - 1);
+		_Ty value = ((bits & mask) << _BitIdx) & (~(mask << _BitIdx));
+		return base & value;
+	}
+
+	template<typename _Ty, typename... _Args>
+	inline _Ty& construct(_Ty& object, _Args&&... args) { return new (&object) _Ty(std::forward<_Args>(args)...), object; }
+
+	template<typename _Ty>
+	inline _Ty& copy(_Ty& dest, const _Ty& source) { return construct<_Ty, const _Ty&>(dest, source); }
+
+	template<typename _Ty>
+	inline _Ty& move(_Ty& dest, _Ty&& source) { return construct<_Ty, _Ty&&>(dest, std::move(source)); }
+
+	template<typename _Ty>
+	inline void destroy(_Ty& object) { object->~_Ty(); }
 }
 
 #define CONCAT_MACROS(_A, _B) _A ## _B
@@ -153,5 +179,8 @@ namespace kram::utils
 #else
 	#define forceinline inline
 #endif
+
+#define scast(_Type, _Value) static_cast<_Type>(_Value)
+#define rcast(_Type, _Value) reinterpret_cast<_Type>(_Value)
 
 
