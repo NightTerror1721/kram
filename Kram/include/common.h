@@ -109,15 +109,15 @@ namespace kram::utils
 	template<unsigned int _BitIdx, unsigned int _BitCount, typename _Ty = UInt8>
 	constexpr _Ty get_bits(_Ty value)
 	{
-		return static_cast<_Ty>((value >> _BitIdx) & ((0x1 << (_BitCount + 1)) - 1));
+		return static_cast<_Ty>((value >> _BitIdx) & ((0x1 << _BitCount) - 1));
 	}
 
 	template<unsigned int _BitIdx, unsigned int _BitCount, typename _Ty = UInt8>
 	constexpr _Ty set_bits(_Ty base, _Ty bits)
 	{
-		_Ty mask = ((0x1 << (_BitCount + 1)) - 1);
-		_Ty value = ((bits & mask) << _BitIdx) & (~(mask << _BitIdx));
-		return base & value;
+		_Ty mask = ((0x1 << _BitCount) - 1);
+		_Ty value = ((bits & mask) << _BitIdx) & ~(_Ty(0));
+		return (base & ~(mask << _BitIdx)) | value;
 	}
 
 	template<typename _Ty, typename... _Args>

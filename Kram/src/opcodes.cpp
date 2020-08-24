@@ -472,14 +472,14 @@ namespace kram::op::build
 		return mode;
 	}
 
-	static inline Instruction& push_arg(Instruction& inst, DataSize size, UInt64 arg)
+	static inline Instruction& push_arg(Instruction& inst, ArgumentMode mode, UInt64 arg)
 	{
-		switch (size)
+		switch (mode)
 		{
-			case DataSize::Byte: inst.add_byte(scast(UInt8, arg)); break;
-			case DataSize::Word: inst.add_word(scast(UInt16, arg)); break;
-			case DataSize::DoubleWord: inst.add_dword(scast(UInt32, arg)); break;
-			case DataSize::QuadWord: inst.add_qword(arg); break;
+			case ArgumentMode::Byte: inst.add_byte(scast(UInt8, arg)); break;
+			case ArgumentMode::Word: inst.add_word(scast(UInt16, arg)); break;
+			case ArgumentMode::DoubleWord: inst.add_dword(scast(UInt32, arg)); break;
+			case ArgumentMode::QuadWord: inst.add_qword(arg); break;
 		}
 		return inst;
 	}
@@ -494,6 +494,27 @@ namespace kram::op::build
 				return true;
 		}
 		return false;
+	}
+
+	constexpr bool has_register(LocationMode locMode)
+	{
+		switch (locMode)
+		{
+			case LocationMode::Register:
+			case LocationMode::AddressInRegister:
+			case LocationMode::AddressInRegisterDelta:
+				return true;
+		}
+		return false;
+	}
+
+	static inline Instruction& push_loc_arg(Instruction& inst, ArgumentMode mode, LocationMode locMode, UInt64 arg, DataSize dataSize = DataSize::Byte)
+	{
+		if (has_register(locMode))
+			inst.add_byte(scast(UInt8, arg));
+		else if (locMode == LocationMode::Immediate)
+			push_arg(inst, scast(ArgumentMode, dataSize), arg);
+		else push_arg(inst, mode, arg);
 	}
 
 	Instruction mov(
@@ -512,19 +533,198 @@ namespace kram::op::build
 		if (is_auto_argmode(argMode))
 			argMode = detect_argmode({ dest, destDelta, src, srcDelta });
 
+		switch (argMode)
+		{
+			default:
+			case ArgumentMode::Byte: inst.opcode(Opcode::MOVB); break;
+			case ArgumentMode::Word: inst.opcode(Opcode::MOVW); break;
+			case ArgumentMode::DoubleWord: inst.opcode(Opcode::MOVL); break;
+			case ArgumentMode::QuadWord: inst.opcode(Opcode::MOVQ); break;
+		}
+
 		UInt8 pars = 0;
 		pars = utils::set_bits<0, 2>(pars, scast(UInt8, dataSize));
 		pars = utils::set_bits<2, 3>(pars, scast(UInt8, destLoc));
 		pars = utils::set_bits<5, 3>(pars, scast(UInt8, srcLoc));
 		inst.add_byte(pars);
 
-		push_arg(inst, dataSize, dest);
+		push_loc_arg(inst, argMode, destLoc, dest, dataSize);
 		if(has_delta(destLoc))
-			push_arg(inst, dataSize, destDelta);
+			push_arg(inst, argMode, destDelta);
 
-		push_arg(inst, dataSize, src);
+		push_loc_arg(inst, argMode, srcLoc, src, dataSize);
 		if (has_delta(srcLoc))
-			push_arg(inst, dataSize, srcDelta);
+			push_arg(inst, argMode, srcDelta);
+
+		return inst;
+	}
+
+	Instruction mmb(
+		LocationMode destLoc,
+		LocationMode srcLoc,
+		UInt64 blockSize,
+		UInt64 dest,
+		UInt64 destDelta,
+		UInt64 src,
+		UInt64 srcDelta,
+		ArgumentMode argMode
+	)
+	{
+		Instruction inst;
+
+		if (is_auto_argmode(argMode))
+			argMode = detect_argmode({ dest, destDelta, src, srcDelta });
+
+		inst.opcode(Opcode::MMB);
+
+		UInt8 pars = 0;
+		pars = utils::set_bits<0, 2>(pars, scast(UInt8, argMode));
+		pars = utils::set_bits<2, 3>(pars, scast(UInt8, destLoc));
+		pars = utils::set_bits<5, 3>(pars, scast(UInt8, srcLoc));
+		inst.add_byte(pars);
+
+		push_arg(inst, argMode, blockSize);
+
+		push_loc_arg(inst, argMode, destLoc, dest);
+		if (has_delta(destLoc))
+			push_arg(inst, argMode, destDelta);
+
+		push_loc_arg(inst, argMode, srcLoc, src);
+		if (has_delta(srcLoc))
+			push_arg(inst, argMode, srcDelta);
+
+		return inst;
+	}
+
+	Instruction lea(
+		bool srcStaticLoc,
+		bool srcHasDelta,
+		UInt8 destRegister,
+		UInt64 src,
+		UInt64 srcDelta,
+		ArgumentMode argMode
+	)
+	{
+		Instruction inst;
+
+		if (is_auto_argmode(argMode))
+			argMode = detect_argmode({ src, srcDelta });
+
+		inst.opcode(Opcode::LEA);
+
+		UInt8 pars = 0;
+		pars = utils::set_bits<0, 2>(pars, scast(UInt8, argMode));
+		pars = utils::set_bits<2, 2>(pars, scast(UInt8, (srcStaticLoc ? 2 : 0) + (srcHasDelta ? 1 : 0)));
+		inst.add_byte(pars);
+
+		inst.add_byte(destRegister);
+		push_arg(inst, argMode, src);
+		if (srcHasDelta)
+			push_arg(inst, argMode, srcDelta);
+
+		return inst;
+	}
+
+	Instruction new_(
+		LocationMode destLoc,
+		bool addHeapRef,
+		UInt64 dest,
+		UInt64 destDelta,
+		UInt64 blockSize,
+		ArgumentMode argMode
+	)
+	{
+		Instruction inst;
+
+		if (is_auto_argmode(argMode))
+			argMode = detect_argmode({ dest, destDelta, blockSize });
+
+		inst.opcode(Opcode::NEW);
+
+		UInt8 pars = 0;
+		pars = utils::set_bits<0, 2>(pars, scast(UInt8, argMode));
+		pars = utils::set_bits<2, 3>(pars, scast(UInt8, destLoc));
+		pars = utils::set_bits<5, 1>(pars, scast(UInt8, addHeapRef));
+		inst.add_byte(pars);
+
+		push_loc_arg(inst, argMode, destLoc, dest);
+		if (has_delta(destLoc))
+			push_arg(inst, argMode, destDelta);
+		push_arg(inst, argMode, blockSize);
+
+		return inst;
+	}
+
+	Instruction del(
+		LocationMode srcLoc,
+		UInt64 src,
+		UInt64 srcDelta,
+		ArgumentMode argMode
+	)
+	{
+		Instruction inst;
+
+		if (is_auto_argmode(argMode))
+			argMode = detect_argmode({ src, srcDelta });
+
+		inst.opcode(Opcode::DEL);
+
+		UInt8 pars = 0;
+		pars = utils::set_bits<0, 2>(pars, scast(UInt8, argMode));
+		pars = utils::set_bits<2, 3>(pars, scast(UInt8, srcLoc));
+		inst.add_byte(pars);
+
+		push_loc_arg(inst, argMode, srcLoc, src);
+		if (has_delta(srcLoc))
+			push_arg(inst, argMode, srcDelta);
+
+		return inst;
+	}
+
+	Instruction mhr(
+		LocationMode targetLoc,
+		bool isIncrease,
+		UInt64 target,
+		UInt64 targetDelta,
+		ArgumentMode argMode
+	)
+	{
+		Instruction inst;
+
+		if (is_auto_argmode(argMode))
+			argMode = detect_argmode({ target, targetDelta });
+
+		inst.opcode(Opcode::MHR);
+
+		UInt8 pars = 0;
+		pars = utils::set_bits<0, 2>(pars, scast(UInt8, argMode));
+		pars = utils::set_bits<2, 3>(pars, scast(UInt8, targetLoc));
+		pars = utils::set_bits<5, 1>(pars, scast(UInt8, isIncrease));
+		inst.add_byte(pars);
+
+		push_loc_arg(inst, argMode, targetLoc, target);
+		if (has_delta(targetLoc))
+			push_arg(inst, argMode, targetDelta);
+
+		return inst;
+	}
+
+	Instruction cst(
+		DataType destType,
+		DataType srcType,
+		UInt8 registerTarget
+	)
+	{
+		Instruction inst;
+
+		inst.opcode(Opcode::CST);
+
+		UInt8 pars = 0;
+		pars = utils::set_bits<0, 4>(pars, scast(UInt8, destType));
+		pars = utils::set_bits<4, 4>(pars, scast(UInt8, srcType));
+		inst.add_byte(pars);
+
+		inst.add_byte(registerTarget);
 
 		return inst;
 	}

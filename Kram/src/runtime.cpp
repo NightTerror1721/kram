@@ -20,12 +20,13 @@ namespace kram::runtime
 
 	static forceinline bool need_resize_stack(Stack* stack, Size extra = 0) { return (stack->roof - stack->top + static_cast<Int64>(extra)) < ((stack->roof - stack->base) / 2); }
 
-	static void call_chunk(RuntimeState* state, ChunkOffset chunkOffset, FunctionOffset functionOffset, RegisterOffset retRegOffset)
+	static void call_chunk(RuntimeState* state, ChunkOffset chunkOffset, FunctionOffset functionOffset, RegisterOffset argsRetRegOffset, Size argsSize)
 	{
 		Stack* stack = state->stack;
 		Chunk* chunk = chunkOffset == SELF_CHUNK ? state->chunk : state->chunk->childChunks + chunkOffset;
 		Function* function = chunk->functions + functionOffset;
 		CallInfo* info = rcast(CallInfo*, stack->top);
+		Register* argsReg = stack->regs + argsRetRegOffset;
 
 		info->inst = state->inst;
 		info->chunk = state->chunk;
@@ -34,7 +35,7 @@ namespace kram::runtime
 		info->regs = rcast(StackUnit*, stack->regs) - stack->base;
 		info->data = stack->data - stack->base;
 
-		info->returnRegisterOffset = retRegOffset;
+		info->returnRegisterOffset = argsRetRegOffset;
 
 		if (need_resize_stack(stack, function->stackSize))
 			_resize_stack(stack, function->stackSize);
@@ -45,6 +46,9 @@ namespace kram::runtime
 
 		state->chunk = chunk;
 		state->inst = rcast(Opcode*, function->code);
+
+		if(argsSize > 0)
+			std::memcpy(stack->data, argsReg->addr, argsSize);
 	}
 
 	static void finish_call(RuntimeState* state, RegisterOffset retRegOffset)
@@ -252,12 +256,14 @@ namespace kram::runtime::support
 	{
 		switch (mode)
 		{
-			case 0: return (*out = a_data<void, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state))), _ArgOffset + sizeof(_ArgMode);
-			case 1: return (*out = a_data<void, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state), sarg<_ArgMode, _ArgOffset + 1, _ArgMode, 1>(state))), _ArgOffset + (sizeof(_ArgMode) * 2);
-			case 2: return (*out = s_data<void, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state))), _ArgOffset + sizeof(_ArgMode);
-			case 3: return (*out = s_data<void, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state), sarg<_ArgMode, _ArgOffset + 1, _ArgMode, 1>(state))), _ArgOffset + (sizeof(_ArgMode) * 2);
-			case 4: return (*out = r_data<void, _ArgMode>(state, arg<UInt8, _ArgOffset>(state))), _ArgOffset + 1;
-			case 5: return (*out = r_data<void, _ArgMode>(state, arg<UInt8, _ArgOffset>(state), arg<_ArgMode, _ArgOffset>(state))), _ArgOffset + (1 + sizeof(_ArgMode));
+			case 0:
+			case 1: return 0;
+			case 2: return (*out = a_data<void, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state))), _ArgOffset + sizeof(_ArgMode);
+			case 3: return (*out = a_data<void, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state), sarg<_ArgMode, _ArgOffset + 1, _ArgMode, 1>(state))), _ArgOffset + (sizeof(_ArgMode) * 2);
+			case 4: return (*out = s_data<void, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state))), _ArgOffset + sizeof(_ArgMode);
+			case 5: return (*out = s_data<void, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state), sarg<_ArgMode, _ArgOffset + 1, _ArgMode, 1>(state))), _ArgOffset + (sizeof(_ArgMode) * 2);
+			case 6: return (*out = r_data<void, _ArgMode>(state, arg<UInt8, _ArgOffset>(state))), _ArgOffset + 1;
+			case 7: return (*out = r_data<void, _ArgMode>(state, arg<UInt8, _ArgOffset>(state), arg<_ArgMode, _ArgOffset>(state))), _ArgOffset + (1 + sizeof(_ArgMode));
 		}
 		return 0;
 	}
@@ -322,43 +328,6 @@ namespace kram::runtime::support
 	}
 
 	template<typename _ArgMode>
-	forceinline void las(RuntimeState& state)
-	{
-
-		switch (arg_2bits(0, 2))
-		{
-			case 0: {
-				UInt8* src;
-				UInt8* dst;
-				dst = aa_data<UInt8, _ArgMode>(state, arg<_ArgMode, 1U>(state));
-				move_pc((mov_access<_ArgMode, UInt8, 1U + sizeof(_ArgMode), true>(state, arg_3bits(0, 4), &src)) + (1LL + sizeof(_ArgMode)));
-				*dst = *src;
-			} return;
-			case 1: {
-				UInt16* src;
-				UInt16* dst;
-				dst = aa_data<UInt16, _ArgMode>(state, arg<_ArgMode, 1U>(state));
-				move_pc((mov_access<_ArgMode, UInt16, 1U + sizeof(_ArgMode), true>(state, arg_3bits(0, 4), &src)) + (1LL + sizeof(_ArgMode)));
-				*dst = *src;
-			} return;
-			case 2: {
-				UInt32* src;
-				UInt32* dst;
-				dst = aa_data<UInt32, _ArgMode>(state, arg<_ArgMode, 1U>(state));
-				move_pc((mov_access<_ArgMode, UInt32, 1U + sizeof(_ArgMode), true>(state, arg_3bits(0, 4), &src)) + (1LL + sizeof(_ArgMode)));
-				*dst = *src;
-			} return;
-			case 3: {
-				UInt64* src;
-				UInt64* dst;
-				dst = aa_data<UInt64, _ArgMode>(state, arg<_ArgMode, 1U>(state));
-				move_pc((mov_access<_ArgMode, UInt64, 1U + sizeof(_ArgMode), true>(state, arg_3bits(0, 4), &src)) + (1LL + sizeof(_ArgMode)));
-				*dst = *src;
-			} return;
-		}
-	}
-
-	template<typename _ArgMode>
 	forceinline void lea(RuntimeState& state)
 	{
 		move_pc((lea_access<_ArgMode, 2U>(state, arg_3bits(0, 4), &(state.stack->regs[arg<UInt8, 1>(state)].addr))) + 2LL);
@@ -398,7 +367,7 @@ namespace kram::runtime::support
 void kram::runtime::execute(KramState* kstate, Chunk* chunk, FunctionOffset function)
 {
 	RuntimeState state{ &kstate->_rstack, kstate };
-	call_chunk(&state, SELF_CHUNK, function, 0);
+	call_chunk(&state, SELF_CHUNK, function, 0, 0);
 
 	for (;;)
 	{
@@ -409,19 +378,19 @@ void kram::runtime::execute(KramState* kstate, Chunk* chunk, FunctionOffset func
 				move_pc(1);
 			end_opcode();
 
-			opcode(Opcode::MOV)
+			opcode(Opcode::MOVB)
 				support::mov<UInt8>(state);
 			end_opcode();
 
-			opcode(Opcode::MOVX)
+			opcode(Opcode::MOVW)
 				support::mov<UInt16>(state);
 			end_opcode();
 
-			opcode(Opcode::MOVEX)
+			opcode(Opcode::MOVL)
 				support::mov<UInt32>(state);
 			end_opcode();
 
-			opcode(Opcode::MOVRX)
+			opcode(Opcode::MOVQ)
 				support::mov<UInt64>(state);
 			end_opcode();
 
@@ -432,16 +401,6 @@ void kram::runtime::execute(KramState* kstate, Chunk* chunk, FunctionOffset func
 					case 1: support::mmb<UInt16>(state); break_endop();
 					case 2: support::mmb<UInt32>(state); break_endop();
 					case 3: support::mmb<UInt64>(state); break_endop();
-				}
-			end_opcode();
-
-			opcode(Opcode::LAS)
-				switch (arg_2bits(0, 0))
-				{
-					case 0: support::las<UInt8>(state); break_endop();
-					case 1: support::las<UInt16>(state); break_endop();
-					case 2: support::las<UInt32>(state); break_endop();
-					case 3: support::las<UInt64>(state); break_endop();
 				}
 			end_opcode();
 

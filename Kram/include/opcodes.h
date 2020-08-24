@@ -8,31 +8,31 @@ namespace kram::op
 	{
 		NOP = 0x00,
 
-		MOV,
-		MOVX,
-		MOVEX,
-		MOVRX, /* [size:2|dest_mode:3|src_mode:3], [dest:8/16/32/64], ?[dest_delta:8/16/32/64], [src:8/16/32/64], ?[src_delta:8/16/32/64]
-				* Move memory from source to destination
-				* Diferences:
-				*		MOV   -> 1 byte per argument
-				*		MOVX  -> 2 bytes per argument
-				*		MOVEX -> 4 bytes per argument
-				*		MOVRX -> 8 bytes per argument
-				* Avaliable modes:
-				*		0: Register
-				*		1: Immediate value (only for source)
-				*		2: Stack data location
-				*		3: Stack data location + delta
-				*		4: Static data location
-				*		5: Static data location + delta
-				*		6: Location at register
-				*		7: Location at register + delta
-				* Available Sizes:
-				*		0: Byte (8 bits)
-				*		1: Word (16 bits)
-				*		2: DWord (32 bits)
-				*		3: QWord (64 bits)
-				*/
+		MOVB,
+		MOVW,
+		MOVL,
+		MOVQ, /* [size:2|dest_mode:3|src_mode:3], [dest:8/16/32/64], ?[dest_delta:8/16/32/64], [src:8/16/32/64], ?[src_delta:8/16/32/64]
+		       * Move memory from source to destination
+			   * Diferences:
+			   *	MOV   -> 1 byte per argument
+			   *	MOVX  -> 2 bytes per argument
+			   *	MOVEX -> 4 bytes per argument
+			   *	MOVRX -> 8 bytes per argument
+			   * Avaliable modes:
+			   *	0: Register
+			   *	1: Immediate value (only for source)
+			   *	2: Stack data location
+			   *	3: Stack data location + delta
+			   *	4: Static data location
+			   *	5: Static data location + delta
+			   *	6: Location at register
+			   *	7: Location at register + delta
+			   * Available Sizes:
+			   *	0: Byte (8 bits)
+			   *	1: Word (16 bits)
+			   *	2: DWord (32 bits)
+			   *	3: QWord (64 bits)
+			   */
 
 		MMB, /* [arg_len:2|dest_mode:3|src_mode:3], [block_size:8/16/32/64], [dest:8/16/32/64], ?[dest_delta:8/16/32/64], [src:8/16/32/64], ?[src_delta:8/16/32/64]
 			  * Move memory block from source to destination
@@ -42,38 +42,17 @@ namespace kram::op
 			  *		2: 4 bytes (32 bits)
 			  *		3: 8 bytes (64 bits)
 			  * Avaliable modes:
-			  *		0: Stack data location
-			  *		1: Stack data location + delta
-			  *		2: Static data location
-			  *		3: Static data location + delta
-			  *		4: Location at register
-			  *		5: Location at register + delta
-			  */
-
-		LAS, /* [arg_len:2|size:2|src_mode:3|<ignore>:1], [dest:8/16/32/64], [src:8/16/32/64], ?[src_delta:8/16/32/64]
-			  * Load argument to stack
-			  * Argument lengths:
-			  *		0: 1 byte (8 bits)
-			  *		1: 2 bytes (16 bits)
-			  *		2: 4 bytes (32 bits)
-			  *		3: 8 bytes (64 bits)
-			  * Avaliable modes:
-			  *		0: Register
-			  *		1: Immediate value
+			  *		0: <not used>
+			  *		1: <not used>
 			  *		2: Stack data location
 			  *		3: Stack data location + delta
 			  *		4: Static data location
 			  *		5: Static data location + delta
 			  *		6: Location at register
 			  *		7: Location at register + delta
-			  * Available Sizes:
-			  *		0: Byte (8 bits)
-			  *		1: Word (16 bits)
-			  *		2: DWord (32 bits)
-			  *		3: QWord (64 bits)
 			  */
 
-		LEA, /* [arg_len:2|mode:2|<ignore>:4], [register_dest:8], [source:8/16/32/64]
+		LEA, /* [arg_len:2|mode:2|<ignore>:4], [register_dest:8], [source:8/16/32/64], ?[source_delta:8/16/32/64]
 			  * Load efective addres (from stack data or static data) to register_dest
 			  * Argument lengths:
 			  *		0: 1 byte (8 bits)
@@ -87,7 +66,7 @@ namespace kram::op
 			  *		4: Static data + delta
 			  */
 
-		NEW, /* [arg_len:2|dst_mode:3|add_ref:1|<ignore>:2], [dst:8/16/32/64], [size:8/16/32/64]
+		NEW, /* [arg_len:2|dst_mode:3|add_ref:1|<ignore>:2], [dst:8/16/32/64], ?[dst_delta:8/16/32/64], [size:8/16/32/64]
 			  * Allocate memory block with "size" bytes and store address into "dst"
 			  * Argument lengths:
 			  *		0: 1 byte (8 bits)
@@ -105,7 +84,7 @@ namespace kram::op
 			  *		7: Location at register + delta
 			  */
 
-		DEL, /* [arg_len:2|src_mode:3|<ignore>:3], [src:8/16/32/64]
+		DEL, /* [arg_len:2|src_mode:3|<ignore>:3], [src:8/16/32/64], ?[src_delta:8/16/32/64]
 			  * Free memory block with address allocated in "src"
 			  * Argument lengths:
 			  *		0: 1 byte (8 bits)
@@ -123,7 +102,7 @@ namespace kram::op
 			  *		7: Location at register + delta
 			  */
 
-		MHR, /* [arg_len:2|dst_mode:3|is_inc:1|<ignore>:2], [target:8/16/32/64]
+		MHR, /* [arg_len:2|dst_mode:3|is_inc:1|<ignore>:2], [target:8/16/32/64], ?[target_delta:8/16/32/64]
 			  * Modify (increase or decrease) heap block memory reference counter from "target"
 			  * Argument lengths:
 			  *		0: 1 byte (8 bits)
@@ -193,6 +172,9 @@ namespace kram::op
 
 		bool operator== (const Instruction& right) const;
 		bool operator!= (const Instruction& right) const;
+
+		inline void opcode(Opcode opcode) { _opcode = opcode; }
+		inline Opcode opcode() const { return _opcode; }
 
 		inline Instruction& add_byte(UInt8 value) { _args.push_back(static_cast<std::byte>(value)); return *this; }
 		inline Instruction& add_sbyte(Int8 value) { _args.push_back(static_cast<std::byte>(value)); return *this; }
@@ -392,5 +374,55 @@ namespace kram::op::build
 		UInt64 src,
 		UInt64 srcDelta,
 		ArgumentMode argMode = scast(ArgumentMode, -1)
+	);
+
+	Instruction mmb(
+		LocationMode destLoc,
+		LocationMode srcLoc,
+		UInt64 blockSize,
+		UInt64 dest,
+		UInt64 destDelta,
+		UInt64 src,
+		UInt64 srcDelta,
+		ArgumentMode argMode = scast(ArgumentMode, -1)
+	);
+
+	Instruction lea(
+		bool srcStaticLoc,
+		bool srcHasDelta,
+		UInt8 destRegister,
+		UInt64 src,
+		UInt64 srcDelta,
+		ArgumentMode argMode = scast(ArgumentMode, -1)
+	);
+
+	Instruction new_(
+		LocationMode destLoc,
+		bool addHeapRef,
+		UInt64 dest,
+		UInt64 destDelta,
+		UInt64 blockSize,
+		ArgumentMode argMode = scast(ArgumentMode, -1)
+	);
+
+	Instruction del(
+		LocationMode srcLoc,
+		UInt64 src,
+		UInt64 srcDelta,
+		ArgumentMode argMode = scast(ArgumentMode, -1)
+	);
+
+	Instruction mhr(
+		LocationMode targetLoc,
+		bool isIncrease,
+		UInt64 target,
+		UInt64 targetDelta,
+		ArgumentMode argMode = scast(ArgumentMode, -1)
+	);
+
+	Instruction cst(
+		DataType destType,
+		DataType srcType,
+		UInt8 registerTarget
 	);
 }
