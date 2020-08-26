@@ -23,7 +23,7 @@ namespace kram::runtime
 	static void call_chunk(RuntimeState* state, ChunkOffset chunkOffset, FunctionOffset functionOffset, RegisterOffset argsRetRegOffset, Size argsSize)
 	{
 		Stack* stack = state->stack;
-		Chunk* chunk = chunkOffset == SELF_CHUNK ? state->chunk : state->chunk->childChunks + chunkOffset;
+		Chunk* chunk = chunkOffset == SELF_CHUNK ? state->chunk : state->chunk->connections + chunkOffset;
 		Function* function = chunk->functions + functionOffset;
 		CallInfo* info = rcast(CallInfo*, stack->top);
 		Register* argsReg = stack->regs + argsRetRegOffset;
@@ -37,15 +37,15 @@ namespace kram::runtime
 
 		info->returnRegisterOffset = argsRetRegOffset;
 
-		if (need_resize_stack(stack, function->stackSize))
-			_resize_stack(stack, function->stackSize);
+		if (need_resize_stack(stack, function->stackCount))
+			_resize_stack(stack, function->stackCount);
 
 		stack->data = rcast(StackUnit*, info + 1);
-		stack->regs = rcast(Register*, stack->regs + function->dataCount);
+		stack->regs = rcast(Register*, stack->regs + function->stackCount);
 		stack->top = rcast(StackUnit*, stack->data + function->registerCount);
 
 		state->chunk = chunk;
-		state->inst = rcast(Opcode*, function->code);
+		state->inst = rcast(Opcode*, chunk->code + function->codeOffset);
 
 		if(argsSize > 0)
 			std::memcpy(stack->data, argsReg->addr, argsSize);

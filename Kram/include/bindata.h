@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.h"
+#include "opcodes.h"
 
 namespace kram::bin
 {
@@ -141,38 +142,104 @@ namespace kram::bin
 {
 	struct StaticValue
 	{
-		const DataType* type;
-		Size size;
-		void* data;
+		Size size = 0;
+		void* data = nullptr;
+
+		StaticValue() = default;
+		inline StaticValue(Size size) : size{ size }, data{ new std::byte[size] } {}
+		inline ~StaticValue() { if (data) delete data; size = 0; data = nullptr; }
 	};
 
 	struct Function
 	{
-		UInt8 parameterCount;
 		UInt8 registerCount;
-		Size dataCount;
-		Size stackSize;
-
-		const DataType** parameterTypes;
-		const DataType* returnType;
-
-		void* code;
+		Size stackCount;
+		std::uintptr_t codeOffset;
 	};
 
 	struct Chunk
 	{
-		Size size;
-		void* data;
+	private:
+		Size _size = 0;
+		void* _data = nullptr;
 
-		Size typeCount;
-		Size staticCount;
-		Size functionCount;
-		Size childChunkCount;
-		Size codeSize;
+	public:
+		Size staticCount = 0;
+		Size functionCount = 0;
+		Size connectionCount = 0;
+		Size codeCount = 0;
 		
-		const DataType* types;
-		StaticValue* statics;
-		Function* functions;
-		Chunk* childChunks;
+		StaticValue* statics = nullptr;
+		Function* functions = nullptr;
+		Chunk* connections = nullptr;
+		std::byte* code = nullptr;
+
+		Chunk() = default;
+		Chunk(Size size);
+		~Chunk();
+
+		void connect_ptr(void** ptr, std::uintptr_t offset);
+	};
+}
+
+namespace kram::bin
+{
+	class ChunkBuilder;
+
+	class FunctionBuilder
+	{
+	private:
+		UInt8 _registers = 0;
+		Size _stackSize = 0;
+		op::InstructionBuilder _code;
+		Size __codeByteCount = 0;
+
+	public:
+		FunctionBuilder() = default;
+		FunctionBuilder(const FunctionBuilder&) = default;
+		FunctionBuilder(FunctionBuilder&&) noexcept = default;
+		~FunctionBuilder() = default;
+
+		FunctionBuilder& operator= (const FunctionBuilder&) = default;
+		FunctionBuilder& operator=(FunctionBuilder&&) noexcept = default;
+
+		inline void registers(UInt8 registers) { _registers = registers; }
+		inline void stack_size(Size stack_size) { _stackSize = stack_size; }
+
+		inline UInt8 registers() const { return _registers; }
+		inline Size stack_size() const { return _stackSize; }
+
+		inline void code(const op::InstructionBuilder& code) { _code = code; }
+		inline void code(op::InstructionBuilder&& code) { _code = std::move(code); }
+		inline const op::InstructionBuilder& code() const { return _code; }
+
+		friend class ChunkBuilder;
+	};
+
+	class ChunkBuilder
+	{
+	private:
+		std::vector<Size> _statics;
+		std::vector<FunctionBuilder> _functions;
+		std::vector<Chunk*> _connections;
+
+	public:
+		ChunkBuilder() = default;
+		ChunkBuilder(const ChunkBuilder&) = default;
+		ChunkBuilder(ChunkBuilder&&) noexcept = default;
+		~ChunkBuilder() = default;
+
+		ChunkBuilder& operator= (const ChunkBuilder&) = default;
+		ChunkBuilder& operator= (ChunkBuilder&&) noexcept = default;
+
+		inline void add_static(Size size) { _statics.push_back(size); }
+		inline void add_function(const FunctionBuilder& function) { _functions.push_back(function); }
+		inline void add_connection(Chunk* chunk) { _connections.push_back(chunk); }
+
+		inline ChunkBuilder& operator<< (Size static_size) { return add_static(static_size), *this; }
+		inline ChunkBuilder& operator<< (const FunctionBuilder& function) { return add_function(function), * this; }
+		inline ChunkBuilder& operator<< (Chunk* chunk) { return add_connection(chunk), * this; }
+
+		void build(Chunk* chunk);
 	};
 }

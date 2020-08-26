@@ -8,6 +8,7 @@
 #include <cstring>
 #include <vector>
 #include <string>
+#include <set>
 #include <map>
 #include <bit>
 
@@ -130,7 +131,7 @@ namespace kram::utils
 	inline _Ty& move(_Ty& dest, _Ty&& source) { return construct<_Ty, _Ty&&>(dest, std::move(source)); }
 
 	template<typename _Ty>
-	inline void destroy(_Ty& object) { object->~_Ty(); }
+	inline void destroy(_Ty& object) { object.~_Ty(); }
 }
 
 #define CONCAT_MACROS(_A, _B) _A ## _B

@@ -51,6 +51,23 @@ namespace kram::op
 			.add_sbyte(ptr[4]).add_sbyte(ptr[5]).add_sbyte(ptr[6]).add_sbyte(ptr[7]);
 	}
 
+	void Instruction::write(void* _buffer, Size buffer_size) const
+	{
+		Size remaining = std::min(buffer_size, byte_count());
+		
+		std::byte* buffer = rcast(std::byte*, _buffer);
+		if (remaining - sizeof(Opcode) >= 0)
+			*rcast(Opcode*, buffer) = _opcode;
+		remaining -= sizeof(Opcode);
+
+		for (std::byte byte : _args)
+		{
+			if (remaining-- <= 0)
+				return;
+			*buffer = byte;
+		}
+	}
+
 	std::ostream& operator<< (std::ostream& os, const Instruction& inst)
 	{
 		os << static_cast<UInt8>(inst._opcode);
@@ -347,6 +364,15 @@ namespace kram::op
 		l1->_instruction = std::move(aux);
 	}
 
+	Size InstructionBuilder::byte_count() const
+	{
+		Size count = 0;
+		for (Node* node = _head; node; node = node->_next)
+			count = node->_instruction.byte_count();
+
+		return count;
+	}
+
 
 	InstructionBuilder::Location InstructionBuilder::push_front(InstructionBuilder&& builder)
 	{
@@ -426,6 +452,23 @@ namespace kram::op
 		if (!position->_next || position->_next == _tail)
 			return push_back(std::move(builder));
 		return insert(position->_next, std::move(builder));
+	}
+
+	void InstructionBuilder::build(void* buffer, Size buffer_size) const
+	{
+		for (Node* node = _head; node; node = node->_next)
+		{
+			if (buffer_size <= 0)
+				return;
+			Size byte_count = node->_instruction.byte_count();
+			node->_instruction.write(buffer, buffer_size);
+			buffer_size = byte_count > buffer_size ? 0 : buffer_size - byte_count;
+		}
+	}
+	void InstructionBuilder::build(std::ostream& os) const
+	{
+		for (Node* node = _head; node; node = node->_next)
+			os << node->_instruction;
 	}
 }
 
@@ -515,6 +558,8 @@ namespace kram::op::build
 		else if (locMode == LocationMode::Immediate)
 			push_arg(inst, scast(ArgumentMode, dataSize), arg);
 		else push_arg(inst, mode, arg);
+
+		return inst;
 	}
 
 	Instruction mov(

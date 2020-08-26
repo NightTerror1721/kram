@@ -197,6 +197,8 @@ namespace kram::op
 		inline Instruction& operator<< (Int32 value) { return add_sdword(value); }
 		inline Instruction& operator<< (Int64 value) { return add_sqword(value); }
 
+		inline Size byte_count() const { return _args.size() + sizeof(Opcode); }
+
 		template<typename _Ty>
 		inline _Ty& arg(unsigned int index)
 		{
@@ -216,6 +218,8 @@ namespace kram::op
 		inline Instruction& set_sdword(unsigned int index, Int32 value) { return (arg<Int32>(index) = value), *this; }
 		inline Instruction& set_sqword(unsigned int index, Int64 value) { return (arg<Int64>(index) = value), *this; }
 
+		void write(void* buffer, Size buffer_size) const;
+
 		friend std::ostream& operator<< (std::ostream& os, const Instruction& inst);
 	};
 
@@ -223,9 +227,11 @@ namespace kram::op
 	{
 	private:
 		struct Node;
+		
+	public:
+		typedef Node* Location;
 
 	private:
-		typedef Node* Location;
 		struct Node
 		{
 			friend class InstructionBuilder;
@@ -274,6 +280,8 @@ namespace kram::op
 		void erase(Location position);
 
 		void swap(Location l0, Location l1);
+
+		Size byte_count() const;
 
 		inline Instruction& front() { return _head->_instruction; }
 		inline const Instruction& front() const { return _head->_instruction; }
@@ -337,6 +345,12 @@ namespace kram::op
 
 		inline InstructionBuilder& operator= (const InstructionBuilder& right) { return _copy(right, true); }
 		inline InstructionBuilder& operator= (InstructionBuilder&& right) noexcept { return _move(std::move(right), true); }
+
+	public:
+		void build(void* buffer, Size buffer_size) const;
+		void build(std::ostream& os) const;
+
+		friend inline std::ostream& operator<< (std::ostream& os, const InstructionBuilder& ib) { return ib.build(os), os; }
 	};
 }
 
