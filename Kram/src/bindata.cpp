@@ -110,13 +110,17 @@ namespace kram::bin
 	Chunk::Chunk(Size size) :
 		Chunk{}
 	{
-		_data = new std::byte[size];
+		_data = utils::malloc_raw(size);
 		_size = size;
 	}
 	Chunk::~Chunk()
 	{
-		if(_data)
-			delete _data;
+		if (_data)
+		{
+			utils::free_raw(_data);
+			_data = nullptr;
+		}
+		_size = 0;
 	}
 
 	void Chunk::connect_ptr(void** ptr, std::uintptr_t offset)
@@ -284,21 +288,22 @@ namespace kram::bin
 	{
 		using Location = op::InstructionBuilder::Location;
 
-		Size size = 0, statics_size = 0, functions_size = 0, connections_size = 0;
-		std::vector<StaticValue> svalues;
+		Size size = 0, statics_size = 0, functions_size = 0, connections_size = 0, code_size = 0;
 
 		size += (connections_size = _connections.size() * sizeof(Chunk*));
+
 		for (Size svsize : _statics)
 		{
-			svalues.emplace_back(svsize);
-			statics_size += svsize + sizeof(StaticValue*);
-			size += svsize + sizeof(StaticValue*);
+			statics_size += svsize;
+			size += svsize;
 		}
+
+		size += (functions_size = _functions.size() * sizeof(Function));
 		for (FunctionBuilder& fb : _functions)
 		{
 			fb.__codeByteCount = fb.code().byte_count();
-			functions_size += fb.__codeByteCount + sizeof(Function);
-			size += fb.__codeByteCount + sizeof(Function);
+			code_size += fb.__codeByteCount;
+			size += fb.__codeByteCount;
 		}
 
 
@@ -312,37 +317,26 @@ namespace kram::bin
 		chunk->connect_ptr(rcast(void**, &chunk->statics), connections_size);
 		chunk->connect_ptr(rcast(void**, &chunk->functions), statics_size + connections_size);
 		chunk->connect_ptr(rcast(void**, &chunk->connections), 0);
+		chunk->connect_ptr(rcast(void**, &chunk->code), statics_size + connections_size + functions_size);
 
 
 		std::memcpy(chunk->connections, _connections.data(), connections_size);
 
-		std::byte* staticsBlockOffset = rcast(std::byte*, chunk->statics) + (svalues.size() * sizeof(StaticValue*));
-		StaticValue* staticsPtrOffset = chunk->statics;
-		for (const StaticValue& svalue : svalues)
-		{
-			*staticsPtrOffset = std::move(svalue);
-			staticsPtrOffset->data = rcast(void*, staticsBlockOffset);
-
-			staticsBlockOffset += staticsPtrOffset->size;
-			staticsPtrOffset++;
-		}
-
 		op::InstructionBuilder code;
-		const std::ptrdiff_t functionRefsSize = svalues.size() * sizeof(StaticValue*);
-		std::byte* functionsBlockOffset = rcast(std::byte*, chunk->functions) + functionRefsSize;
 		Function* functionsPtrOffset = chunk->functions;
+		Size codeOffset = 0;
 		for (const FunctionBuilder& fb : _functions)
 		{
-			functionsPtrOffset->registerCount = fb.registers();
+			functionsPtrOffset->parameterCount = fb.parameters();
 			functionsPtrOffset->stackCount = fb.stack_size();
-			functionsPtrOffset->codeOffset = functionsPtrOffset - (chunk->functions + functionRefsSize);
+			functionsPtrOffset->codeOffset = codeOffset;
 
 			code.push_back(fb.code());
 
-			functionsBlockOffset += fb.__codeByteCount;
 			functionsPtrOffset++;
+			codeOffset += fb.__codeByteCount;
 		}
 
-		code.build(rcast(std::byte*, chunk->functions) + functionRefsSize, functions_size - functionRefsSize);
+		code.build(chunk->code, code_size);
 	}
 }

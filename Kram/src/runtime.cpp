@@ -10,461 +10,805 @@ using kram::op::Opcode;
 namespace kram::runtime
 {
 	RuntimeState::RuntimeState(Stack* stack, Heap* heap) :
+		regs{},
 		stack{ stack },
 		heap{ heap },
-		chunk{ nullptr },
-		inst{ nullptr },
 		exit{ false },
 		error{ ErrorCode::OK }
 	{}
 
-	static forceinline bool need_resize_stack(Stack* stack, Size extra = 0) { return (stack->roof - stack->top + static_cast<Int64>(extra)) < ((stack->roof - stack->base) / 2); }
-
-	static void call_chunk(RuntimeState* state, ChunkOffset chunkOffset, FunctionOffset functionOffset, RegisterOffset argsRetRegOffset, Size argsSize)
+	static forceinline bool need_resize_stack(RuntimeState* state)
 	{
-		Stack* stack = state->stack;
-		Chunk* chunk = chunkOffset == SELF_CHUNK ? state->chunk : state->chunk->connections + chunkOffset;
-		Function* function = chunk->functions + functionOffset;
-		CallInfo* info = rcast(CallInfo*, stack->top);
-		Register* argsReg = stack->regs + argsRetRegOffset;
-
-		info->inst = state->inst;
-		info->chunk = state->chunk;
-
-		info->top = stack->top - stack->base;
-		info->regs = rcast(StackUnit*, stack->regs) - stack->base;
-		info->data = stack->data - stack->base;
-
-		info->returnRegisterOffset = argsRetRegOffset;
-
-		if (need_resize_stack(stack, function->stackCount))
-			_resize_stack(stack, function->stackCount);
-
-		stack->data = rcast(StackUnit*, info + 1);
-		stack->regs = rcast(Register*, stack->regs + function->stackCount);
-		stack->top = rcast(StackUnit*, stack->data + function->registerCount);
-
-		state->chunk = chunk;
-		state->inst = rcast(Opcode*, chunk->code + function->codeOffset);
-
-		if(argsSize > 0)
-			std::memcpy(stack->data, argsReg->addr, argsSize);
+		Stack& stack = *state->stack;
+		return (stack.roof - (stack.base + state->regs.st.stack_offset)) < ((stack.roof - stack.base) / 2);
 	}
 
-	static void finish_call(RuntimeState* state, RegisterOffset retRegOffset)
+	static void init_runtime(RuntimeState* state, Chunk* chunk, FunctionOffset functionOffset)
 	{
-		Stack* stack = state->stack;
-		CallInfo* info = stack->cinfo;
-		auto rr = stack->regs[retRegOffset].reg;
-		
-		stack->top = stack->base + info->top;
-		stack->regs = rcast(Register*, stack->base + info->regs);
-		stack->data = stack->base + info->data;
-		stack->cinfo = rcast(CallInfo*, stack->data) - 1;
+		Function* function = chunk->functions + functionOffset;
 
-		state->chunk = info->chunk;
-		state->inst = info->inst;
+		state->regs.sb.stack_offset = 0;
+		state->regs.sp.stack_offset = state->regs.sb.stack_offset + function->stackCount + sizeof(Registers);
+		state->regs.st.stack_offset = state->regs.sp.stack_offset + function->parameterCount;
+		state->regs.ch.addr_chunk = chunk;
+		state->regs.ip.addr_bytes = chunk->code + function->codeOffset;
+		state->regs.sd.addr_bytes = chunk->statics;
 
-		if(!(state->exit = !state->inst))
-			stack->regs[info->returnRegisterOffset].reg = rr;
+		if (need_resize_stack(state))
+			_resize_stack(state->stack, state->regs.st.stack_offset - state->regs.sb.stack_offset);
+	}
+
+	static void call_chunk(RuntimeState* state, ChunkOffset chunkOffset, FunctionOffset functionOffset)
+	{
+		Chunk* chunk = chunkOffset == SELF_CHUNK ? state->regs.ch.addr_chunk : state->regs.ch.addr_chunk->connections + chunkOffset;
+		Function* function = chunk->functions + functionOffset;
+
+		Registers* oldregs = rcast(Registers*, state->stack->base + state->regs.sp.stack_offset) - 1;
+		*oldregs = state->regs;
+
+		state->regs.sb = oldregs->sp;
+		state->regs.sp.stack_offset = state->regs.sb.stack_offset + function->stackCount + sizeof(Registers);
+		state->regs.st.stack_offset = state->regs.sp.stack_offset + function->parameterCount;
+		state->regs.ch.addr_chunk = chunk;
+		state->regs.ip.addr_bytes = chunk->code + function->codeOffset;
+		state->regs.sd.addr_bytes = chunk->statics;
+
+		if (need_resize_stack(state))
+			_resize_stack(state->stack, state->regs.st.stack_offset - state->regs.sb.stack_offset);
+	}
+
+	static void finish_call(RuntimeState* state)
+	{
+		if (state->regs.sb.stack_offset == 0)
+			state->exit = true;
+
+		Registers* oldregs = rcast(Registers*, state->stack->base + state->regs.sb.stack_offset) - 1;
+		oldregs->sr = state->regs.sr;
+		state->regs = *oldregs;
+		state->exit = false;
 	}
 
 	void _build_stack(Stack* stack, Size size)
 	{
-		stack->base = new StackUnit[size];
+		stack->base = _kram_malloc(StackUnit, size);
 		stack->roof = stack->base + size;
-
-		stack->top = stack->data = stack->base;
-		stack->regs = rcast(Register*, stack->base);
-		stack->cinfo = rcast(CallInfo*, stack->base);
 	}
-	void _resize_stack(Stack* stack, Size extra)
+	void _resize_stack(Stack* stack, Size min)
 	{
 		Size size = static_cast<Size>(stack->roof - stack->base);
-
+		Size newsize = size * 2 + (size < min ? min - size : 0);
 		StackUnit* old = stack->base;
-		std::ptrdiff_t top = stack->top - old;
-		std::ptrdiff_t regs = rcast(StackUnit*, stack->regs) - old;
-		std::ptrdiff_t data = stack->data - old;
-		std::ptrdiff_t cinfo = rcast(StackUnit*, stack->cinfo) - old;
 
-		stack->base = new StackUnit[size * 2 + extra];
-		stack->roof = stack->base + (size * 2 + extra);
+		stack->base = _kram_malloc(StackUnit, newsize);
+		stack->roof = stack->base + newsize;
 
 		std::memcpy(stack->base, old, size);
 
-		stack->top = stack->base + top;
-		stack->regs = rcast(Register*, stack->base + regs);
-		stack->data = stack->base + data;
-		stack->cinfo = rcast(CallInfo*, stack->base + cinfo);
-
-		delete old;
+		_kram_free(old);
 	}
 	void _destroy_stack(Stack* stack)
 	{
-		delete stack->base;
+		_kram_free(stack->base);
 		std::memset(stack, 0, sizeof(*stack));
 	}
 }
 
-#define move_pc(_Amount) (state.inst += (_Amount))
-#define opcode(_Inst) case _Inst : {
+
+
+
+#define do_opcode(_Inst) case _Inst : {
 #define end_opcode() } goto instruction_begin
-#define break_endop() goto instruction_begin
-#define movpc_endop(_Amount) move_pc(_Amount); goto instruction_begin
+#define move_ip(_Amount) (state.regs.ip.addr_bytes += (_Amount))
 
-#define register(_Idx) state.stack->regs[_Idx]
-
-#define register_data_a(_Part, _Idx) register(_Idx).CONCAT_MACROS(addr_, _Part)
-#define register_data_ad(_Type, _Idx, _Delta) rcast(_Type*, register(_Idx).addr_u8 + (_Delta))
-#define register_data(_Part, _Idx) *register_data_a(_Part, _Idx)
-#define register_data_d(_Type, _Idx, _Delta) *register_data_ad(_Type, _Idx, _Delta)
-
-#define stack_data_a(_Type, _Idx) rcast(_Type*, state.stack->data + (_Idx))
-#define stack_data_ad(_Type, _Idx, _Delta) rcast(_Type*, state.stack->data + ((_Idx) + (_Delta)))
-#define stack_data(_Type, _Idx) *stack_data_a(_Type, _Idx)
-#define stack_data_d(_Type, _Idx, _Delta) *stack_data_ad(_Type, _Idx, _Delta)
-
-#define static_data_a(_Type, _Idx) rcast(_Type*, chunk->statics[_Idx].data)
-#define static_data_ad(_Type, _Idx, _Delta) rcast(_Type*, rcast(UInt8*, chunk->statics[_Idx].data) + (_Delta))
-#define static_data(_Type, _Idx) *static_data_a(_Type, _Idx)
-#define static_data_d(_Type, _Idx, _Delta) *static_data_ad(_Type, _Idx, _Delta)
-
-#define stack_arg_data(_Type, _Idx) *rcast(_Type*, state.stack->top + (sizeof(CallInfo) + (_Idx)))
-
-#define arg_byte(_Idx) (rcast(UInt8*, state.inst)[_Idx])
-#define arg_word(_Idx) (*rcast(UInt16*, state.inst + (_Idx)))
-#define arg_dword(_Idx) (*rcast(UInt32*, state.inst + (_Idx)))
-#define arg_qword(_Idx) (*rcast(UInt64*, state.inst + (_Idx)))
-
-#define arg_sbyte(_Idx) (*rcast(Int8*, state.inst + (_Idx)))
-#define arg_sword(_Idx) (*rcast(Int16*, state.inst + (_Idx)))
-#define arg_sdword(_Idx) (*rcast(Int32*, state.inst + (_Idx)))
-#define arg_sqword(_Idx) (*rcast(Int64*, state.inst + (_Idx)))
-
-#define arg_1bit(_Idx, _BitIdx) ((arg_byte(_Idx) >> (_BitIdx)) & 0x01U)
-#define arg_2bits(_Idx, _BitIdx) ((arg_byte(_Idx) >> (_BitIdx)) & 0x03U)
-#define arg_3bits(_Idx, _BitIdx) ((arg_byte(_Idx) >> (_BitIdx)) & 0x07U)
-#define arg_4bits(_Idx, _BitIdx) ((arg_byte(_Idx) >> (_BitIdx)) & 0x0FU)
-#define arg_5bits(_Idx, _BitIdx) ((arg_byte(_Idx) >> (_BitIdx)) & 0x1FU)
-#define arg_6bits(_Idx, _BitIdx) ((arg_byte(_Idx) >> (_BitIdx)) & 0x3FU)
-#define arg_7bits(_Idx, _BitIdx) ((arg_byte(_Idx) >> (_BitIdx)) & 0x7FU)
-
-
-#define mcpy(_Dst, _Src, _Size) std::memcpy((_Dst), (_Src), static_cast<kram::Size>(_Size))
-
-#define op_cast_type(_Reg, _RegPart) \
-	switch (arg_4bits(0, 4)) { \
-		case 0: reg->_RegPart = static_cast<decltype(reg->_RegPart)>(reg->u8); movpc_endop(3); \
-		case 1: reg->_RegPart = static_cast<decltype(reg->_RegPart)>(reg->u16); movpc_endop(3); \
-		case 2: reg->_RegPart = static_cast<decltype(reg->_RegPart)>(reg->u32); movpc_endop(3); \
-		case 3: reg->_RegPart = static_cast<decltype(reg->_RegPart)>(reg->u64); movpc_endop(3); \
-		case 4: reg->_RegPart = static_cast<decltype(reg->_RegPart)>(reg->s8); movpc_endop(3); \
-		case 5: reg->_RegPart = static_cast<decltype(reg->_RegPart)>(reg->s16); movpc_endop(3); \
-		case 6: reg->_RegPart = static_cast<decltype(reg->_RegPart)>(reg->s32); movpc_endop(3); \
-		case 7: reg->_RegPart = static_cast<decltype(reg->_RegPart)>(reg->s64); movpc_endop(3); \
-		case 8: reg->_RegPart = static_cast<decltype(reg->_RegPart)>(reg->f32); movpc_endop(3); \
-		case 9: reg->_RegPart = static_cast<decltype(reg->_RegPart)>(reg->f64); movpc_endop(3); \
-	} break
-
-#define op_binary(_Op, _DstRegId, _SrcRegId) \
-	switch (arg_4bits(0, 0)) { \
-		case 0: register(_DstRegId).u8 _Op ## = register(_SrcRegId).u8; movpc_endop(3); \
-		case 1: register(_DstRegId).u16 _Op ## = register(_SrcRegId).u16; movpc_endop(3); \
-		case 2: register(_DstRegId).u32 _Op ## = register(_SrcRegId).u32; movpc_endop(3); \
-		case 3: register(_DstRegId).u64 _Op ## = register(_SrcRegId).u64; movpc_endop(3); \
-		case 4: register(_DstRegId).s8 _Op ## = register(_SrcRegId).s8; movpc_endop(3); \
-		case 5: register(_DstRegId).s16 _Op ## = register(_SrcRegId).s16; movpc_endop(3); \
-		case 6: register(_DstRegId).s32 _Op ## = register(_SrcRegId).s32; movpc_endop(3); \
-		case 7: register(_DstRegId).s64 _Op ## = register(_SrcRegId).s64; movpc_endop(3); \
-		case 8: register(_DstRegId).f32 _Op ## = register(_SrcRegId).f32; movpc_endop(3); \
-		case 9: register(_DstRegId).f64 _Op ## = register(_SrcRegId).f64; movpc_endop(3); \
-	} break
-
-
-namespace kram::runtime::support
+namespace kram::runtime
 {
-	template<typename _Ty>
-	forceinline _Ty* reg(RuntimeState& state, UInt8 idx) { return rcast(_Ty*, &state.stack->regs[idx].reg); }
-
-	template<typename _Ty, typename _ArgType>
-	forceinline _Ty* a_data(RuntimeState& state, _ArgType idx) { return rcast(_Ty*, state.stack->data + idx); }
-
-	template<typename _Ty, typename _ArgType>
-	forceinline _Ty* a_data(RuntimeState& state, _ArgType idx, _ArgType delta)
+	namespace ru
 	{
-		return rcast(_Ty*, state.stack->data + (scast(Size, idx) + delta));
-	}
-
-	template<typename _Ty, typename _ArgType>
-	forceinline _Ty* s_data(RuntimeState& state, _ArgType idx) { return rcast(_Ty*, state.chunk->statics[idx].data); }
-
-	template<typename _Ty, typename _ArgType>
-	forceinline _Ty* s_data(RuntimeState& state, _ArgType idx, _ArgType delta)
-	{
-		return rcast(_Ty*, rcast(char*, state.chunk->statics[idx].data) + delta);
-	}
-
-	template<typename _Ty, typename _ArgType>
-	forceinline _Ty* r_data(RuntimeState& state, UInt8 idx) { return rcast(_Ty*, state.stack->regs[idx].addr); }
-
-	template<typename _Ty, typename _ArgType>
-	forceinline _Ty* r_data(RuntimeState& state, UInt8 idx, _ArgType delta)
-	{
-		return rcast(_Ty*, rcast(char*, state.stack->regs[idx].addr) + delta);
-	}
-
-	template<typename _Ty, typename _ArgType>
-	forceinline _Ty* aa_data(RuntimeState& state, _ArgType idx) { return rcast(_Ty*, state.stack->top + sizeof(CallInfo) + idx); }
-
-	template<typename _Ty, unsigned int _Idx>
-	forceinline _Ty arg(RuntimeState& state) { return *rcast(_Ty*, state.inst + _Idx); }
-
-	template<typename _Ty, unsigned int _Idx>
-	forceinline _Ty& ref_arg(RuntimeState& state) { return *rcast(_Ty*, state.inst + _Idx); }
-
-	template<typename _Ty, unsigned int _Idx, typename _ShiftType, unsigned int _ShiftAmount>
-	forceinline _Ty sarg(RuntimeState& state) { return *rcast(_Ty*, state.inst + _Idx + (sizeof(_ShiftType) * _ShiftAmount - _ShiftAmount)); }
-
-	template<typename _ArgMode, typename _DataSize, unsigned int _ArgOffset, bool _ValidImm>
-	forceinline int mov_access(RuntimeState& state, UInt8 mode, _DataSize** out)
-	{
-		switch (mode)
+		template<std::integral _Ty>
+		forceinline _Ty pop_arg(RuntimeState& state)
 		{
-			case 0: return (*out = reg<_DataSize>(state, arg<UInt8, _ArgOffset>(state))), _ArgOffset + 1;
-			case 1:
-				if constexpr (_ValidImm)
+			if constexpr (sizeof(_Ty) == 1)
+			{
+				if constexpr (std::signed_integral<_Ty>)
+					return *(state.regs.ip.addr_s8++);
+				else return *(state.regs.ip.addr_u8++);
+			}
+			else if constexpr (sizeof(_Ty) == 2)
+			{
+				if constexpr (std::signed_integral<_Ty>)
+					return *(state.regs.ip.addr_s16++);
+				else return *(state.regs.ip.addr_u16++);
+			}
+			else if constexpr (sizeof(_Ty) == 4)
+			{
+				if constexpr (std::signed_integral<_Ty>)
+					return *(state.regs.ip.addr_s32++);
+				else return *(state.regs.ip.addr_u32++);
+			}
+			else
+			{
+				if constexpr (std::signed_integral<_Ty>)
+					return *(state.regs.ip.addr_s64++);
+				else return *(state.regs.ip.addr_u64++);
+			}
+		}
+
+		template<std::integral _Ty, unsigned int _ArgIdx>
+		forceinline _Ty get_arg(RuntimeState& state)
+		{
+			if constexpr (sizeof(_Ty) == 1)
+			{
+				if constexpr (std::signed_integral<_Ty>)
+					return *(state.regs.ip.addr_s8 + _ArgIdx);
+				else return *(state.regs.ip.addr_u8 + _ArgIdx);
+			}
+			else
+			{
+				return *reinterpret_cast<_Ty*>(state.regs.ip.addr_bytes + _ArgIdx);
+			}
+		}
+
+		template<unsigned int _BitIdx, unsigned int _BitCount>
+		forceinline UInt8 bits(UInt8 value)
+		{
+			return static_cast<UInt8>((value >> _BitIdx) & ((0x1 << _BitCount) - 1));
+		}
+
+		template<unsigned int _BitIdx>
+		forceinline bool test(UInt8 value)
+		{
+			return static_cast<bool>((value >> _BitIdx) & 0x1);
+		}
+
+
+		template<unsigned int _BitIdx, unsigned int _BitCount>
+		forceinline UInt8 pop_arg_bits(RuntimeState& state)
+		{
+			return bits<_BitIdx, _BitCount>(pop_arg<UInt8>(state));
+		}
+
+		template<unsigned int _ArgIdx, unsigned int _BitIdx, unsigned int _BitCount>
+		forceinline UInt8 get_arg_bits(RuntimeState& state)
+		{
+			return bits<_BitIdx, _BitCount>(get_arg<UInt8, _ArgIdx>(state));
+		}
+
+		template<typename _Ty>
+		forceinline _Ty& reg(RuntimeState& state, unsigned int index)
+		{
+			if constexpr (std::integral<_Ty>)
+			{
+				if constexpr (sizeof(_Ty) == 1)
 				{
-					return (*out = &ref_arg<_DataSize, _ArgOffset>(state)), _ArgOffset + sizeof(_DataSize);
+					if constexpr (std::signed_integral<_Ty>)
+						return state.regs.by_index[index].s8;
+					else return state.regs.by_index[index].u8;
+				}
+				else if constexpr (sizeof(_Ty) == 2)
+				{
+					if constexpr (std::signed_integral<_Ty>)
+						return state.regs.by_index[index].s16;
+					else return state.regs.by_index[index].u16;
+				}
+				else if constexpr (sizeof(_Ty) == 4)
+				{
+					if constexpr (std::signed_integral<_Ty>)
+						return state.regs.by_index[index].s32;
+					else return state.regs.by_index[index].u32;
 				}
 				else
 				{
-					return 0;
+					if constexpr (std::signed_integral<_Ty>)
+						return state.regs.by_index[index].s64;
+					else return state.regs.by_index[index].u64;
 				}
-			case 2: return (*out = a_data<_DataSize, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state))), _ArgOffset + sizeof(_ArgMode);
-			case 3: return (*out = a_data<_DataSize, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state), sarg<_ArgMode, _ArgOffset + 1, _ArgMode, 1>(state))), _ArgOffset + (sizeof(_ArgMode) * 2);
-			case 4: return (*out = s_data<_DataSize, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state))), _ArgOffset + sizeof(_ArgMode);
-			case 5: return (*out = s_data<_DataSize, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state), sarg<_ArgMode, _ArgOffset + 1, _ArgMode, 1>(state))), _ArgOffset + (sizeof(_ArgMode) * 2);
-			case 6: return (*out = r_data<_DataSize, _ArgMode>(state, arg<UInt8, _ArgOffset>(state))), _ArgOffset + 1;
-			case 7: return (*out = r_data<_DataSize, _ArgMode>(state, arg<UInt8, _ArgOffset>(state), arg<_ArgMode, _ArgOffset>(state))), _ArgOffset + (1 + sizeof(_ArgMode));
+			}
+			else if constexpr (std::floating_point<_Ty>)
+			{
+				if constexpr (std::same_as<_Ty, float>)
+					return state.regs.by_index[index].f32;
+				else state.regs.by_index[index].f64;
+			}
+			else
+			{
+				return *rcast(_Ty*, rcast(void*, &state.regs.by_index[index]._value));
+			}
 		}
-		return 0;
-	}
 
-	template<typename _ArgMode, unsigned int _ArgOffset>
-	forceinline int mmb_access(RuntimeState& state, UInt8 mode, void** out)
-	{
-		switch (mode)
+		template<typename _Ty, bool _FromStack>
+		forceinline _Ty& from_mem(RuntimeState& state, std::uintptr_t offset)
 		{
-			case 0:
-			case 1: return 0;
-			case 2: return (*out = a_data<void, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state))), _ArgOffset + sizeof(_ArgMode);
-			case 3: return (*out = a_data<void, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state), sarg<_ArgMode, _ArgOffset + 1, _ArgMode, 1>(state))), _ArgOffset + (sizeof(_ArgMode) * 2);
-			case 4: return (*out = s_data<void, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state))), _ArgOffset + sizeof(_ArgMode);
-			case 5: return (*out = s_data<void, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state), sarg<_ArgMode, _ArgOffset + 1, _ArgMode, 1>(state))), _ArgOffset + (sizeof(_ArgMode) * 2);
-			case 6: return (*out = r_data<void, _ArgMode>(state, arg<UInt8, _ArgOffset>(state))), _ArgOffset + 1;
-			case 7: return (*out = r_data<void, _ArgMode>(state, arg<UInt8, _ArgOffset>(state), arg<_ArgMode, _ArgOffset>(state))), _ArgOffset + (1 + sizeof(_ArgMode));
+			if constexpr (_FromStack)
+			{
+				return *rcast(_Ty*, (state.stack->base + state.regs.sb.stack_offset + offset));
+			}
+			else
+			{
+				return *rcast(_Ty*, (state.regs.sd.addr_stack_offset + offset));
+			}
 		}
-		return 0;
-	}
 
-	template<typename _ArgMode, unsigned int _ArgOffset>
-	forceinline int lea_access(RuntimeState& state, UInt8 mode, void** out)
-	{
-		switch (mode)
+		template<typename _Ty>
+		forceinline _Ty& from_mem(RuntimeState& state, std::uintptr_t offset, bool from_stack)
 		{
-			case 0: return (*out = a_data<void, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state))), _ArgOffset + sizeof(_ArgMode);
-			case 1: return (*out = a_data<void, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state), sarg<_ArgMode, _ArgOffset + 1, _ArgMode, 1>(state))), _ArgOffset + (sizeof(_ArgMode) * 2);
-			case 2: return (*out = s_data<void, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state))), _ArgOffset + sizeof(_ArgMode);
-			case 3: return (*out = s_data<void, _ArgMode>(state, arg<_ArgMode, _ArgOffset>(state), sarg<_ArgMode, _ArgOffset + 1, _ArgMode, 1>(state))), _ArgOffset + (sizeof(_ArgMode) * 2);
+			return from_stack
+				? *rcast(_Ty*, (state.stack->base + state.regs.sb.stack_offset + offset))
+				: *rcast(_Ty*, (state.regs.sd.addr_stack_offset + offset));
 		}
-		return 0;
-	}
 
-	template<typename _ArgMode>
-	forceinline void mov(RuntimeState& state)
-	{
-
-		switch (arg_2bits(0, 0))
+		template<typename _DestType, typename _SrcType>
+		forceinline void raw_cast_to(void* dst, _SrcType value)
 		{
-			case 0: {
-				UInt8* src;
-				UInt8* dst;
-				move_pc((mov_access<_ArgMode, UInt8, 1U, false>(state, arg_3bits(0, 2), &dst)) + 1LL);
-				move_pc((mov_access<_ArgMode, UInt8, 0U, true>(state, arg_3bits(0, 5), &src)));
-				*dst = *src;
-			} return;
-			case 1: {
-				UInt16* src;
-				UInt16* dst;
-				move_pc((mov_access<_ArgMode, UInt16, 1U, false>(state, arg_3bits(0, 2), &dst)) + 1LL);
-				move_pc((mov_access<_ArgMode, UInt16, 0U, true>(state, arg_3bits(0, 5), &src)));
-				*dst = *src;
-			} return;
-			case 2: {
-				UInt32* src;
-				UInt32* dst;
-				move_pc((mov_access<_ArgMode, UInt32, 1U, false>(state, arg_3bits(0, 2), &dst)) + 1LL);
-				move_pc((mov_access<_ArgMode, UInt32, 0U, true>(state, arg_3bits(0, 5), &src)));
-				*dst = *src;
-			} return;
-			case 3: {
-				UInt64* src;
-				UInt64* dst;
-				move_pc((mov_access<_ArgMode, UInt64, 1U, false>(state, arg_3bits(0, 2), &dst)) + 1LL);
-				move_pc((mov_access<_ArgMode, UInt64, 0U, true>(state, arg_3bits(0, 5), &src)));
-				*dst = *src;
-			} return;
+			*rcast(_DestType*, dst) = scast(_DestType, value);
+		}
+
+		template<typename _FromType>
+		forceinline void cast_to(UInt8 type, void* dst, _FromType value)
+		{
+			switch (type)
+			{
+				case 0: raw_cast_to<UInt8>(dst, value); return;
+				case 1: raw_cast_to<UInt16>(dst, value); return;
+				case 2: raw_cast_to<UInt32>(dst, value); return;
+				case 3: raw_cast_to<UInt64>(dst, value); return;
+				case 4: raw_cast_to<Int8>(dst, value); return;
+				case 5: raw_cast_to<Int16>(dst, value); return;
+				case 6: raw_cast_to<Int32>(dst, value); return;
+				case 7: raw_cast_to<Int64>(dst, value); return;
+				case 8: raw_cast_to<float>(dst, value); return;
+				case 9: raw_cast_to<double>(dst, value); return;
+			}
+		}
+
+		forceinline void cast_from_to(UInt8 dst_type, void* dst, UInt8 src_type, void* src)
+		{
+			switch (src_type)
+			{
+				case 0: cast_to(dst_type, dst, *rcast(UInt8*, src)); return;
+				case 1: cast_to(dst_type, dst, *rcast(UInt16*, src)); return;
+				case 2: cast_to(dst_type, dst, *rcast(UInt32*, src)); return;
+				case 3: cast_to(dst_type, dst, *rcast(UInt64*, src)); return;
+				case 4: cast_to(dst_type, dst, *rcast(Int8*, src)); return;
+				case 5: cast_to(dst_type, dst, *rcast(Int16*, src)); return;
+				case 6: cast_to(dst_type, dst, *rcast(Int32*, src)); return;
+				case 7: cast_to(dst_type, dst, *rcast(Int64*, src)); return;
+				case 8: cast_to(dst_type, dst, *rcast(float*, src)); return;
+				case 9: cast_to(dst_type, dst, *rcast(double*, src)); return;
+			}
+		}
+
+
+
+		template<std::unsigned_integral _SizeType>
+		forceinline void mov_r_r(RuntimeState& state)
+		{
+			UInt8 regs = pop_arg<UInt8>(state);
+
+			if constexpr (sizeof(_SizeType) == 1)
+				state.regs.by_index[bits<0, 4>(regs)].u8 = state.regs.by_index[bits<4, 4>(regs)].u8;
+			else if constexpr (sizeof(_SizeType) == 2)
+				state.regs.by_index[bits<0, 4>(regs)].u16 = state.regs.by_index[bits<4, 4>(regs)].u16;
+			else if constexpr (sizeof(_SizeType) == 4)
+				state.regs.by_index[bits<0, 4>(regs)].u32 = state.regs.by_index[bits<4, 4>(regs)].u32;
+			else
+				state.regs.by_index[bits<0, 4>(regs)].u64 = state.regs.by_index[bits<4, 4>(regs)].u64;
+		}
+
+		template<std::unsigned_integral _SizeType, bool _Swap>
+		forceinline void mov_rm_rm(RuntimeState& state)
+		{
+			UInt8 pars = pop_arg<UInt8>(state);
+			UInt8 regs = pop_arg<UInt8>(state);
+			std::uintptr_t addr = 0;
+			if (test<2>(pars))
+			{
+				if constexpr (_Swap)
+				{
+					switch (bits<3, 2>(pars))
+					{
+						case 0: addr += state.regs.by_index[bits<0, 4>(regs)].u64; break;
+						case 1: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 2; break;
+						case 2: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 4; break;
+						case 3: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 8; break;
+					}
+				}
+				else
+				{
+					switch (bits<3, 2>(pars))
+					{
+						case 0: addr += state.regs.by_index[bits<4, 4>(regs)].u64; break;
+						case 1: addr += state.regs.by_index[bits<4, 4>(regs)].u64 * 2; break;
+						case 2: addr += state.regs.by_index[bits<4, 4>(regs)].u64 * 4; break;
+						case 3: addr += state.regs.by_index[bits<4, 4>(regs)].u64 * 8; break;
+					}
+				}
+			}
+			if (test<5>(pars))
+			{
+				switch (bits<6, 2>(pars))
+				{
+					case 0: addr += pop_arg<UInt8>(state); break;
+					case 1: addr += pop_arg<UInt16>(state); break;
+					case 2: addr += pop_arg<UInt32>(state); break;
+					case 3: addr += pop_arg<UInt64>(state); break;
+				}
+			}
+			if constexpr (_Swap)
+			{
+				switch (bits<0, 2>(pars))
+				{
+					case 0: if(addr != 0) *rcast(_SizeType*, addr) = reg<_SizeType>(state, bits<4, 4>(regs)); return;
+					case 1: from_mem<_SizeType, true>(state, addr) = reg<_SizeType>(state, bits<4, 4>(regs)); return;
+					case 2: from_mem<_SizeType, false>(state, addr) = reg<_SizeType>(state, bits<4, 4>(regs)); return;
+				}
+			}
+			else
+			{
+				switch (bits<0, 2>(pars))
+				{
+					case 0: if (addr != 0) reg<_SizeType>(state, bits<0, 4>(regs)) = *rcast(_SizeType*, addr); return;
+					case 1: reg<_SizeType>(state, bits<0, 4>(regs)) = from_mem<_SizeType, true>(state, addr); return;
+					case 2: reg<_SizeType>(state, bits<0, 4>(regs)) = from_mem<_SizeType, false>(state, addr); return;
+				}
+			}
+		}
+
+		template<std::unsigned_integral _SizeType>
+		forceinline void mov_r_imm(RuntimeState& state)
+		{
+			UInt8 reg = pop_arg_bits<0, 4>(state);
+
+			if constexpr (sizeof(_SizeType) == 1)
+				state.regs.by_index[reg].u8 = pop_arg<UInt8>(state);
+			else if constexpr (sizeof(_SizeType) == 2)
+				state.regs.by_index[reg].u16 = pop_arg<UInt16>(state);
+			else if constexpr (sizeof(_SizeType) == 4)
+				state.regs.by_index[reg].u32 = pop_arg<UInt32>(state);
+			else
+				state.regs.by_index[reg].u64 = pop_arg<UInt64>(state);
+		}
+
+		template<std::unsigned_integral _SizeType>
+		forceinline void mov_m_imm(RuntimeState& state)
+		{
+			UInt8 pars = pop_arg<UInt8>(state);
+			UInt8 regs = pop_arg<UInt8>(state);
+			_SizeType imm = pop_arg<_SizeType>(state);
+			std::uintptr_t addr = 0;
+			if (test<2>(pars))
+			{
+				switch (bits<3, 2>(pars))
+				{
+					case 0: addr += state.regs.by_index[bits<0, 4>(regs)].u64; break;
+					case 1: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 2; break;
+					case 2: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 4; break;
+					case 3: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 8; break;
+				}
+			}
+			if (test<5>(pars))
+			{
+				switch (bits<6, 2>(pars))
+				{
+					case 0: addr += pop_arg<UInt8>(state); break;
+					case 1: addr += pop_arg<UInt16>(state); break;
+					case 2: addr += pop_arg<UInt32>(state); break;
+					case 3: addr += pop_arg<UInt64>(state); break;
+				}
+			}
+			switch (bits<0, 2>(pars))
+			{
+				case 0: if (addr != 0) *rcast(_SizeType*, addr) = imm; return;
+				case 1: from_mem<_SizeType, true>(state, addr) = imm; return;
+				case 2: from_mem<_SizeType, false>(state, addr) = imm; return;
+			}
+		}
+
+		forceinline void lea(RuntimeState& state)
+		{
+			UInt8 pars = pop_arg<UInt8>(state);
+			UInt8 regs = pop_arg<UInt8>(state);
+			std::uintptr_t addr = 0;
+			if (test<2>(pars))
+			{
+				switch (bits<3, 2>(pars))
+				{
+					case 0: addr += state.regs.by_index[bits<4, 4>(regs)].u64; break;
+					case 1: addr += state.regs.by_index[bits<4, 4>(regs)].u64 * 2; break;
+					case 2: addr += state.regs.by_index[bits<4, 4>(regs)].u64 * 4; break;
+					case 3: addr += state.regs.by_index[bits<4, 4>(regs)].u64 * 8; break;
+				}
+			}
+			if (test<5>(pars))
+			{
+				switch (bits<6, 2>(pars))
+				{
+					case 0: addr += pop_arg<UInt8>(state); break;
+					case 1: addr += pop_arg<UInt16>(state); break;
+					case 2: addr += pop_arg<UInt32>(state); break;
+					case 3: addr += pop_arg<UInt64>(state); break;
+				}
+			}
+			switch (bits<0, 2>(pars))
+			{
+				case 0: state.regs.by_index[bits<0, 4>(regs)].stack_offset = addr; return;
+				case 1: state.regs.by_index[bits<0, 4>(regs)].addr_stack_offset = state.stack->base + state.regs.sb.stack_offset + addr; return;
+				case 2: state.regs.by_index[bits<0, 4>(regs)].addr_stack_offset = state.regs.sd.addr_stack_offset + addr; return;
+			}
+		}
+
+		template<std::unsigned_integral _SizeType>
+		forceinline void mmb(RuntimeState& state)
+		{
+			UInt8 regs = pop_arg<UInt8>(state);
+			Size size = static_cast<Size>(pop_arg<_SizeType>(state));
+			std::memcpy(state.regs.by_index[bits<0, 4>(regs)].addr, state.regs.by_index[bits<4, 4>(regs)].addr, size);
+		}
+
+		forceinline void new_r_s(RuntimeState& state)
+		{
+			UInt8 pars = pop_arg<UInt8>(state);
+			Size size;
+			
+			switch (bits<4, 2>(pars))
+			{
+				case 0: size = pop_arg<UInt8>(state); break;
+				case 1: size = pop_arg<UInt16>(state); break;
+				case 2: size = pop_arg<UInt32>(state); break;
+				case 3: size = pop_arg<UInt64>(state); break;
+				default: return;
+			}
+
+			state.regs.by_index[bits<0, 4>(pars)].addr = state.heap->malloc(size, test<6>(pars));
+		}
+
+		forceinline void new_m_s(RuntimeState& state)
+		{
+			UInt8 pars = pop_arg<UInt8>(state);
+			UInt8 regs = pop_arg<UInt8>(state);
+
+			Size size;
+			switch (bits<4, 2>(regs))
+			{
+				case 0: size = pop_arg<UInt8>(state); break;
+				case 1: size = pop_arg<UInt16>(state); break;
+				case 2: size = pop_arg<UInt32>(state); break;
+				case 3: size = pop_arg<UInt64>(state); break;
+				default: size = 0;
+			}
+
+			std::uintptr_t addr = 0;
+			if (test<2>(pars))
+			{
+				switch (bits<3, 2>(pars))
+				{
+					case 0: addr += state.regs.by_index[bits<0, 4>(regs)].u64; break;
+					case 1: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 2; break;
+					case 2: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 4; break;
+					case 3: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 8; break;
+				}
+			}
+			if (test<5>(pars))
+			{
+				switch (bits<6, 2>(pars))
+				{
+					case 0: addr += pop_arg<UInt8>(state); break;
+					case 1: addr += pop_arg<UInt16>(state); break;
+					case 2: addr += pop_arg<UInt32>(state); break;
+					case 3: addr += pop_arg<UInt64>(state); break;
+				}
+			}
+			switch (bits<0, 2>(pars))
+			{
+				case 0: if (addr != 0) *rcast(void**, addr) = state.heap->malloc(size, test<6>(regs)); return;
+				case 1: from_mem<void*, true>(state, addr) = state.heap->malloc(size, test<6>(regs)); return;
+				case 2: from_mem<void*, false>(state, addr) = state.heap->malloc(size, test<6>(regs)); return;
+			}
+		}
+
+		forceinline void del_r(RuntimeState& state)
+		{
+			state.heap->free(state.regs.by_index[pop_arg_bits<0, 4>(state)].addr);
+		}
+
+		forceinline void del_m(RuntimeState& state)
+		{
+			UInt8 pars = pop_arg<UInt8>(state);
+			UInt8 regs = pop_arg<UInt8>(state);
+
+			std::uintptr_t addr = 0;
+			if (test<2>(pars))
+			{
+				switch (bits<3, 2>(pars))
+				{
+					case 0: addr += state.regs.by_index[bits<0, 4>(regs)].u64; break;
+					case 1: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 2; break;
+					case 2: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 4; break;
+					case 3: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 8; break;
+				}
+			}
+			if (test<5>(pars))
+			{
+				switch (bits<6, 2>(pars))
+				{
+					case 0: addr += pop_arg<UInt8>(state); break;
+					case 1: addr += pop_arg<UInt16>(state); break;
+					case 2: addr += pop_arg<UInt32>(state); break;
+					case 3: addr += pop_arg<UInt64>(state); break;
+				}
+			}
+			switch (bits<0, 2>(pars))
+			{
+				case 0: if (addr != 0) state.heap->free(*rcast(void**, addr)); return;
+				case 1: state.heap->free(from_mem<void*, true>(state, addr)); return;
+				case 2: state.heap->free(from_mem<void*, false>(state, addr)); return;
+			}
+		}
+
+		forceinline void mhr_r(RuntimeState& state)
+		{
+			UInt8 pars = pop_arg<UInt8>(state);
+			if (test<4>(pars))
+				state.heap->increase_ref(state.regs.by_index[bits<0, 4>(pars)].addr);
+			else state.heap->decrease_ref(state.regs.by_index[bits<0, 4>(pars)].addr);
+		}
+
+		forceinline void mhr_m(RuntimeState& state)
+		{
+			UInt8 pars = pop_arg<UInt8>(state);
+			UInt8 regs = pop_arg<UInt8>(state);
+
+			std::uintptr_t addr = 0;
+			if (test<2>(pars))
+			{
+				switch (bits<3, 2>(pars))
+				{
+					case 0: addr += state.regs.by_index[bits<0, 4>(regs)].u64; break;
+					case 1: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 2; break;
+					case 2: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 4; break;
+					case 3: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 8; break;
+				}
+			}
+			if (test<5>(pars))
+			{
+				switch (bits<6, 2>(pars))
+				{
+					case 0: addr += pop_arg<UInt8>(state); break;
+					case 1: addr += pop_arg<UInt16>(state); break;
+					case 2: addr += pop_arg<UInt32>(state); break;
+					case 3: addr += pop_arg<UInt64>(state); break;
+				}
+			}
+			if (test<5>(regs))
+			{
+				switch (bits<0, 2>(pars))
+				{
+					case 0: if (addr != 0) state.heap->increase_ref(*rcast(void**, addr)); return;
+					case 1: state.heap->increase_ref(from_mem<void*, true>(state, addr)); return;
+					case 2: state.heap->increase_ref(from_mem<void*, false>(state, addr)); return;
+				}
+			}
+			else
+			{
+				switch (bits<0, 2>(pars))
+				{
+					case 0: if (addr != 0) state.heap->decrease_ref(*rcast(void**, addr)); return;
+					case 1: state.heap->decrease_ref(from_mem<void*, true>(state, addr)); return;
+					case 2: state.heap->decrease_ref(from_mem<void*, false>(state, addr)); return;
+				}
+			}
+		}
+
+		forceinline void cst_r(RuntimeState& state)
+		{
+			void* reg = &state.regs.by_index[pop_arg_bits<0, 4>(state)]._value;
+			UInt8 types = pop_arg<UInt8>(state);
+
+			cast_from_to(bits<0, 4>(types), reg, bits<4, 4>(types), reg);
+		}
+
+		forceinline void cst_m(RuntimeState& state)
+		{
+			UInt8 pars = pop_arg<UInt8>(state);
+			UInt8 regs = pop_arg<UInt8>(state);
+			UInt8 types = pop_arg<UInt8>(state);
+
+			std::uintptr_t addr = 0;
+			if (test<2>(pars))
+			{
+				switch (bits<3, 2>(pars))
+				{
+					case 0: addr += state.regs.by_index[bits<0, 4>(regs)].u64; break;
+					case 1: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 2; break;
+					case 2: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 4; break;
+					case 3: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 8; break;
+				}
+			}
+			if (test<5>(pars))
+			{
+				switch (bits<6, 2>(pars))
+				{
+					case 0: addr += pop_arg<UInt8>(state); break;
+					case 1: addr += pop_arg<UInt16>(state); break;
+					case 2: addr += pop_arg<UInt32>(state); break;
+					case 3: addr += pop_arg<UInt64>(state); break;
+				}
+			}
+
+			void* ptr;
+			switch (bits<0, 2>(pars))
+			{
+				case 0: if (addr != 0) ptr = rcast(void*, addr); return;
+				case 1: ptr = from_mem<void*, true>(state, addr); return;
+				case 2: ptr = from_mem<void*, false>(state, addr); return;
+				default: return;
+			}
+
+			cast_from_to(bits<0, 4>(types), ptr, bits<4, 4>(types), ptr);
 		}
 	}
 
-	template<typename _ArgMode>
-	forceinline void mmb(RuntimeState& state)
+	void execute(KramState* kstate, bin::Chunk* chunk, FunctionOffset function)
 	{
-		void *src, *dst;
-		move_pc((mmb_access<_ArgMode, sizeof(_ArgMode) + 1U>(state, arg_3bits(0, 2), &dst)) + (1LL + sizeof(_ArgMode)));
-		move_pc((mmb_access<_ArgMode, 0U>(state, arg_3bits(0, 5), &src)));
-		std::memcpy(dst, src, arg<_ArgMode, 1U>(state));
-	}
+		RuntimeState state{ &kstate->_rstack, kstate };
+		init_runtime(&state, chunk, function);
 
-	template<typename _ArgMode>
-	forceinline void lea(RuntimeState& state)
-	{
-		move_pc((lea_access<_ArgMode, 2U>(state, arg_3bits(0, 4), &(state.stack->regs[arg<UInt8, 1>(state)].addr))) + 2LL);
-	}
+		int x = ru::pop_arg<char>(state);
 
-	template<typename _ArgMode>
-	forceinline void new_(RuntimeState& state)
-	{
-		void** dst;
-		bool add_reg = arg_1bit(0, 5);
-		move_pc((mov_access<_ArgMode, void*, 1U, false>(state, arg_3bits(0, 2), &dst)) + 1LL);
-		*dst = state.heap->malloc(arg<_ArgMode, 0U>(state), add_reg);
-		move_pc(sizeof(_ArgMode));
-	}
+	instruction_begin:
+		switch (*(state.regs.ip.addr_opcode++))
+		{
+			do_opcode(op::Opcode::NOP)
+			end_opcode();
 
-	template<typename _ArgMode>
-	forceinline void del(RuntimeState& state)
-	{
-		void** src;
-		move_pc((mov_access<_ArgMode, void*, 1U, false>(state, arg_3bits(0, 2), &src)) + 1LL);
-		state.heap->free(*src);
-	}
 
-	template<typename _ArgMode>
-	forceinline void mhr(RuntimeState& state)
-	{
-		void** target;
-		bool is_inc = arg_1bit(0, 5);
-		move_pc((mov_access<_ArgMode, void*, 1U, false>(state, arg_3bits(0, 2), &target)) + 1LL);
-		if (is_inc)
-			Heap::increase_ref(*target);
-		else Heap::decrease_ref(*target);
+			do_opcode(op::Opcode::MOV_r8_r8)
+				ru::mov_r_r<UInt8>(state);
+			end_opcode();
+
+			do_opcode(op::Opcode::MOV_r16_r16)
+				ru::mov_r_r<UInt16>(state);
+			end_opcode();
+
+			do_opcode(op::Opcode::MOV_r32_r32)
+				ru::mov_r_r<UInt32>(state);
+			end_opcode();
+
+			do_opcode(op::Opcode::MOV_r64_r64)
+				ru::mov_r_r<UInt64>(state);
+			end_opcode();
+
+
+			do_opcode(op::Opcode::MOV_r8_m8)
+				ru::mov_rm_rm<UInt8, false>(state);
+			end_opcode();
+
+			do_opcode(op::Opcode::MOV_r16_m16)
+				ru::mov_rm_rm<UInt16, false>(state);
+			end_opcode();
+
+			do_opcode(op::Opcode::MOV_r32_m32)
+				ru::mov_rm_rm<UInt32, false>(state);
+			end_opcode();
+
+			do_opcode(op::Opcode::MOV_r64_m64)
+				ru::mov_rm_rm<UInt64, false>(state);
+			end_opcode();
+
+
+			do_opcode(op::Opcode::MOV_m8_r8)
+				ru::mov_rm_rm<UInt8, true>(state);
+			end_opcode();
+
+			do_opcode(op::Opcode::MOV_m16_r16)
+				ru::mov_rm_rm<UInt16, true>(state);
+			end_opcode();
+
+			do_opcode(op::Opcode::MOV_m32_r32)
+				ru::mov_rm_rm<UInt32, true>(state);
+			end_opcode();
+
+			do_opcode(op::Opcode::MOV_m64_r64)
+				ru::mov_rm_rm<UInt64, true>(state);
+			end_opcode();
+
+
+			do_opcode(op::Opcode::MOV_r8_imm8)
+				ru::mov_r_imm<UInt8>(state);
+			end_opcode();
+
+			do_opcode(op::Opcode::MOV_r16_imm16)
+				ru::mov_r_imm<UInt16>(state);
+			end_opcode();
+
+			do_opcode(op::Opcode::MOV_r32_imm32)
+				ru::mov_r_imm<UInt32>(state);
+			end_opcode();
+
+			do_opcode(op::Opcode::MOV_r64_imm64)
+				ru::mov_r_imm<UInt64>(state);
+			end_opcode();
+
+
+			do_opcode(op::Opcode::MOV_m8_imm8)
+				ru::mov_m_imm<UInt8>(state);
+			end_opcode();
+
+			do_opcode(op::Opcode::MOV_m16_imm16)
+				ru::mov_m_imm<UInt16>(state);
+			end_opcode();
+
+			do_opcode(op::Opcode::MOV_m32_imm32)
+				ru::mov_m_imm<UInt32>(state);
+			end_opcode();
+
+			do_opcode(op::Opcode::MOV_m64_imm64)
+				ru::mov_m_imm<UInt64>(state);
+			end_opcode();
+
+
+			do_opcode(op::Opcode::LEA)
+				ru::lea(state);
+			end_opcode();
+
+
+			do_opcode(op::Opcode::MMB_sb)
+				ru::mmb<UInt8>(state);
+			end_opcode();
+
+			do_opcode(op::Opcode::MMB_sw)
+				ru::mmb<UInt16>(state);
+			end_opcode();
+
+			do_opcode(op::Opcode::MMB_sd)
+				ru::mmb<UInt32>(state);
+			end_opcode();
+
+			do_opcode(op::Opcode::MMB_sq)
+				ru::mmb<UInt64>(state);
+			end_opcode();
+
+
+			do_opcode(op::Opcode::NEW_r_s)
+				ru::new_r_s(state);
+			end_opcode();
+
+
+			do_opcode(op::Opcode::NEW_m_s)
+				ru::new_m_s(state);
+			end_opcode();
+
+
+			do_opcode(op::Opcode::DEL_r)
+				ru::del_r(state);
+			end_opcode();
+
+
+			do_opcode(op::Opcode::DEL_m)
+				ru::del_m(state);
+			end_opcode();
+
+
+			do_opcode(op::Opcode::MHR_r)
+				ru::mhr_r(state);
+			end_opcode();
+
+
+			do_opcode(op::Opcode::MHR_m)
+				ru::mhr_m(state);
+			end_opcode();
+
+
+			do_opcode(op::Opcode::CST_r)
+				ru::cst_r(state);
+			end_opcode();
+
+
+			do_opcode(op::Opcode::CST_m)
+				ru::cst_m(state);
+			end_opcode();
+		}
 	}
 }
 
 
-void kram::runtime::execute(KramState* kstate, Chunk* chunk, FunctionOffset function)
-{
-	RuntimeState state{ &kstate->_rstack, kstate };
-	call_chunk(&state, SELF_CHUNK, function, 0, 0);
-
-	for (;;)
-	{
-		instruction_begin:
-		switch (*state.inst)
-		{
-			opcode(Opcode::NOP)
-				move_pc(1);
-			end_opcode();
-
-			opcode(Opcode::MOVB)
-				support::mov<UInt8>(state);
-			end_opcode();
-
-			opcode(Opcode::MOVW)
-				support::mov<UInt16>(state);
-			end_opcode();
-
-			opcode(Opcode::MOVL)
-				support::mov<UInt32>(state);
-			end_opcode();
-
-			opcode(Opcode::MOVQ)
-				support::mov<UInt64>(state);
-			end_opcode();
-
-			opcode(Opcode::MMB)
-				switch (arg_2bits(0, 0))
-				{
-					case 0: support::mmb<UInt8>(state); break_endop();
-					case 1: support::mmb<UInt16>(state); break_endop();
-					case 2: support::mmb<UInt32>(state); break_endop();
-					case 3: support::mmb<UInt64>(state); break_endop();
-				}
-			end_opcode();
-
-			opcode(Opcode::LEA)
-				switch (arg_2bits(0, 0))
-				{
-					case 0: support::lea<UInt8>(state); break_endop();
-					case 1: support::lea<UInt16>(state); break_endop();
-					case 2: support::lea<UInt32>(state); break_endop();
-					case 3: support::lea<UInt64>(state); break_endop();
-				}
-			end_opcode();
-
-			opcode(Opcode::NEW)
-				switch (arg_2bits(0, 0))
-				{
-					case 0: support::new_<UInt8>(state); break_endop();
-					case 1: support::new_<UInt16>(state); break_endop();
-					case 2: support::new_<UInt32>(state); break_endop();
-					case 3: support::new_<UInt64>(state); break_endop();
-				}
-			end_opcode();
-
-			opcode(Opcode::DEL)
-				switch (arg_2bits(0, 0))
-				{
-					case 0: support::del<UInt8>(state); break_endop();
-					case 1: support::del<UInt16>(state); break_endop();
-					case 2: support::del<UInt32>(state); break_endop();
-					case 3: support::del<UInt64>(state); break_endop();
-				}
-			end_opcode();
-
-			opcode(Opcode::MHR)
-				switch (arg_2bits(0, 0))
-				{
-					case 0: support::mhr<UInt8>(state); break_endop();
-					case 1: support::mhr<UInt16>(state); break_endop();
-					case 2: support::mhr<UInt32>(state); break_endop();
-					case 3: support::mhr<UInt64>(state); break_endop();
-				}
-			end_opcode();
-
-			opcode(Opcode::CST)
-				Register* reg = &register(arg_byte(1));
-				switch (arg_4bits(0, 0))
-				{
-					case 0: op_cast_type(reg, u8);
-					case 1: op_cast_type(reg, u16);
-					case 2: op_cast_type(reg, u32);
-					case 3: op_cast_type(reg, u64);
-					case 4: op_cast_type(reg, s8);
-					case 5: op_cast_type(reg, s16);
-					case 6: op_cast_type(reg, s32);
-					case 7: op_cast_type(reg, s64);
-					case 8: op_cast_type(reg, f32);
-					case 9: op_cast_type(reg, f64);
-				}
-			end_opcode();
-
-			opcode(Opcode::ADD)
-				op_binary(+, arg_byte(1), arg_byte(2));
-			end_opcode();
-		}
-	}
-}
 

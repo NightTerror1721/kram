@@ -13,51 +13,78 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
+    <Filter Include="Archivos de encabezado\utils">
+      <UniqueIdentifier>{04a04103-686f-42d4-a140-8816875ebb2a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Archivos de encabezado\kram asm">
+      <UniqueIdentifier>{2826737a-076b-459a-97aa-bad4bd2cf2aa}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Archivos de encabezado\vm">
+      <UniqueIdentifier>{d1847d01-3f5e-4c13-a26d-93792e55f0ea}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Archivos de origen\kram asm">
+      <UniqueIdentifier>{af3bfca4-2bb0-4b6a-8f73-7abba00073aa}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Archivos de origen\vm">
+      <UniqueIdentifier>{f34c3484-f456-4126-821b-967afe4560c2}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Archivos de origen\utils">
+      <UniqueIdentifier>{76067e7d-1c0a-4e3e-bce5-7bb0498ba8fb}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\main.cpp">
       <Filter>Archivos de origen</Filter>
     </ClCompile>
-    <ClCompile Include="src\native_mem.c">
-      <Filter>Archivos de origen</Filter>
+    <ClCompile Include="src\kram_asm_parser.cpp">
+      <Filter>Archivos de origen\kram asm</Filter>
     </ClCompile>
     <ClCompile Include="src\vm.cpp">
-      <Filter>Archivos de origen</Filter>
-    </ClCompile>
-    <ClCompile Include="src\bindata.cpp">
-      <Filter>Archivos de origen</Filter>
+      <Filter>Archivos de origen\vm</Filter>
     </ClCompile>
     <ClCompile Include="src\opcodes.cpp">
-      <Filter>Archivos de origen</Filter>
+      <Filter>Archivos de origen\vm</Filter>
     </ClCompile>
-    <ClCompile Include="src\runtime.cpp">
-      <Filter>Archivos de encabezado</Filter>
+    <ClCompile Include="src\native_mem.c">
+      <Filter>Archivos de origen\vm</Filter>
+    </ClCompile>
+    <ClCompile Include="src\bindata.cpp">
+      <Filter>Archivos de origen\vm</Filter>
     </ClCompile>
     <ClCompile Include="src\heap.cpp">
-      <Filter>Archivos de origen</Filter>
+      <Filter>Archivos de origen\vm</Filter>
+    </ClCompile>
+    <ClCompile Include="src\runtime.cpp">
+      <Filter>Archivos de origen\vm</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="include\common.h">
-      <Filter>Archivos de encabezado</Filter>
-    </ClInclude>
-    <ClInclude Include="include\native_mem.h">
-      <Filter>Archivos de encabezado</Filter>
+    <ClInclude Include="include\kram_asm_parser.h">
+      <Filter>Archivos de encabezado\kram asm</Filter>
     </ClInclude>
     <ClInclude Include="include\vm.h">
-      <Filter>Archivos de encabezado</Filter>
-    </ClInclude>
-    <ClInclude Include="include\bindata.h">
-      <Filter>Archivos de encabezado</Filter>
+      <Filter>Archivos de encabezado\vm</Filter>
     </ClInclude>
     <ClInclude Include="include\opcodes.h">
-      <Filter>Archivos de encabezado</Filter>
+      <Filter>Archivos de encabezado\vm</Filter>
     </ClInclude>
-    <ClInclude Include="include\runtime.h">
-      <Filter>Archivos de origen</Filter>
+    <ClInclude Include="include\native_mem.h">
+      <Filter>Archivos de encabezado\vm</Filter>
     </ClInclude>
     <ClInclude Include="include\heap.h">
-      <Filter>Archivos de encabezado</Filter>
+      <Filter>Archivos de encabezado\vm</Filter>
+    </ClInclude>
+    <ClInclude Include="include\bindata.h">
+      <Filter>Archivos de encabezado\vm</Filter>
+    </ClInclude>
+    <ClInclude Include="include\common.h">
+      <Filter>Archivos de encabezado\utils</Filter>
+    </ClInclude>
+    <ClInclude Include="include\static_array.h">
+      <Filter>Archivos de encabezado\utils</Filter>
+    </ClInclude>
+    <ClInclude Include="include\runtime.h">
+      <Filter>Archivos de encabezado\vm</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

@@ -5,7 +5,7 @@
 namespace kram::op
 {
 	Instruction::Instruction() :
-		_opcode{ Opcode::NOP },
+		_opcode{ scast(Opcode, 0) },
 		_args{}
 	{}
 
@@ -477,299 +477,252 @@ namespace kram::op
 
 namespace kram::op::build
 {
-	constexpr bool is_auto_argmode(ArgumentMode mode) { return mode < ArgumentMode::Byte || mode > ArgumentMode::QuadWord; }
+	template<unsigned int _BitIdx, unsigned int _BitCount, typename _BaseTy, typename _ValueTy>
+	constexpr UInt8 bits(_BaseTy base, _ValueTy value) { return utils::set_bits<_BitIdx, _BitCount, UInt8>(scast(UInt8, base), scast(UInt8, value)); }
 
-	static inline ArgumentMode detect_argmode(const std::vector<UInt64>& args)
+	template<unsigned int _BitIdx, unsigned int _BitCount, typename _ValueTy>
+	constexpr UInt8 bits(_ValueTy value) { return utils::set_bits<_BitIdx, _BitCount, UInt8>(0, scast(UInt8, value)); }
+
+	UInt8 location_to_byte(const MemoryLocation& loc)
 	{
-		ArgumentMode mode = ArgumentMode::Byte;
-		for (UInt64 arg : args)
-		{
-			switch (mode)
-			{
-				case ArgumentMode::Byte:
-					if (arg > 0xffffffffU)
-						mode = ArgumentMode::QuadWord;
-					else if (arg > 0xffffU)
-						mode = ArgumentMode::DoubleWord;
-					else if (arg > 0xffU)
-						mode = ArgumentMode::Word;
-					break;
-
-				case ArgumentMode::Word:
-					if (arg > 0xffffffffU)
-						mode = ArgumentMode::QuadWord;
-					else if (arg > 0xffffU)
-						mode = ArgumentMode::DoubleWord;
-					break;
-
-				case ArgumentMode::DoubleWord:
-					if (arg > 0xffffffffU)
-						mode = ArgumentMode::QuadWord;
-					break;
-			}
-
-			if (mode == ArgumentMode::QuadWord)
-				break;
-		}
-
-		return mode;
+		return bits<0, 2>(loc.segment) |
+			bits<2, 1>(loc.enabledSplitRegister) |
+			bits<3, 2>(loc.splitMode) |
+			bits<5, 1>(!loc.delta.is_zero()) |
+			bits<6, 2>(loc.delta.bytes());
 	}
 
-	static inline Instruction& push_arg(Instruction& inst, ArgumentMode mode, UInt64 arg)
+	template<typename _Ty> requires std::same_as<_Ty, UnsignedInteger> || std::same_as<_Ty, Value>
+	Instruction& add_value(Instruction& inst, const _Ty & uint)
 	{
-		switch (mode)
+		UInt64 value = uint;
+		switch (uint.bytes())
 		{
-			case ArgumentMode::Byte: inst.add_byte(scast(UInt8, arg)); break;
-			case ArgumentMode::Word: inst.add_word(scast(UInt16, arg)); break;
-			case ArgumentMode::DoubleWord: inst.add_dword(scast(UInt32, arg)); break;
-			case ArgumentMode::QuadWord: inst.add_qword(arg); break;
+			case DataSize::Byte: inst.add_byte(scast(UInt8, value)); break;
+			case DataSize::Word: inst.add_word(scast(UInt16, value)); break;
+			case DataSize::DoubleWord: inst.add_dword(scast(UInt32, value)); break;
+			case DataSize::QuadWord: inst.add_qword(value); break;
 		}
 		return inst;
 	}
 
-	constexpr bool has_delta(LocationMode locMode)
-	{
-		switch (locMode)
-		{
-			case LocationMode::StackDelta:
-			case LocationMode::StaticDelta:
-			case LocationMode::AddressInRegisterDelta:
-				return true;
-		}
-		return false;
-	}
 
-	constexpr bool has_register(LocationMode locMode)
-	{
-		switch (locMode)
-		{
-			case LocationMode::Register:
-			case LocationMode::AddressInRegister:
-			case LocationMode::AddressInRegisterDelta:
-				return true;
-		}
-		return false;
-	}
 
-	static inline Instruction& push_loc_arg(Instruction& inst, ArgumentMode mode, LocationMode locMode, UInt64 arg, DataSize dataSize = DataSize::Byte)
-	{
-		if (has_register(locMode))
-			inst.add_byte(scast(UInt8, arg));
-		else if (locMode == LocationMode::Immediate)
-			push_arg(inst, scast(ArgumentMode, dataSize), arg);
-		else push_arg(inst, mode, arg);
-
-		return inst;
-	}
-
-	Instruction mov(
-		DataSize dataSize,
-		LocationMode destLoc,
-		LocationMode srcLoc,
-		UInt64 dest,
-		UInt64 destDelta,
-		UInt64 src,
-		UInt64 srcDelta,
-		ArgumentMode argMode
-	)
+	Instruction mov(DataSize size, Register dest, Register src)
 	{
 		Instruction inst;
 
-		if (is_auto_argmode(argMode))
-			argMode = detect_argmode({ dest, destDelta, src, srcDelta });
-
-		switch (argMode)
+		switch (size)
 		{
-			default:
-			case ArgumentMode::Byte: inst.opcode(Opcode::MOVB); break;
-			case ArgumentMode::Word: inst.opcode(Opcode::MOVW); break;
-			case ArgumentMode::DoubleWord: inst.opcode(Opcode::MOVL); break;
-			case ArgumentMode::QuadWord: inst.opcode(Opcode::MOVQ); break;
+			case DataSize::Byte: inst.opcode(Opcode::MOV_r8_r8); break;
+			case DataSize::Word: inst.opcode(Opcode::MOV_r16_r16); break;
+			case DataSize::DoubleWord: inst.opcode(Opcode::MOV_r32_r32); break;
+			case DataSize::QuadWord: inst.opcode(Opcode::MOV_r64_r64); break;
 		}
 
-		UInt8 pars = 0;
-		pars = utils::set_bits<0, 2>(pars, scast(UInt8, dataSize));
-		pars = utils::set_bits<2, 3>(pars, scast(UInt8, destLoc));
-		pars = utils::set_bits<5, 3>(pars, scast(UInt8, srcLoc));
-		inst.add_byte(pars);
-
-		push_loc_arg(inst, argMode, destLoc, dest, dataSize);
-		if(has_delta(destLoc))
-			push_arg(inst, argMode, destDelta);
-
-		push_loc_arg(inst, argMode, srcLoc, src, dataSize);
-		if (has_delta(srcLoc))
-			push_arg(inst, argMode, srcDelta);
+		inst.add_byte(bits<0, 4>(dest) | bits<4, 4>(src));
 
 		return inst;
 	}
 
-	Instruction mmb(
-		LocationMode destLoc,
-		LocationMode srcLoc,
-		UInt64 blockSize,
-		UInt64 dest,
-		UInt64 destDelta,
-		UInt64 src,
-		UInt64 srcDelta,
-		ArgumentMode argMode
-	)
+	Instruction mov(DataSize size, bool mem_to_reg, const MemoryLocation& location, Register reg)
 	{
 		Instruction inst;
 
-		if (is_auto_argmode(argMode))
-			argMode = detect_argmode({ dest, destDelta, src, srcDelta });
+		switch (size)
+		{
+			case DataSize::Byte: inst.opcode(mem_to_reg ? Opcode::MOV_r8_m8 : Opcode::MOV_m8_r8); break;
+			case DataSize::Word: inst.opcode(mem_to_reg ? Opcode::MOV_r16_m16 : Opcode::MOV_m16_r16); break;
+			case DataSize::DoubleWord: inst.opcode(mem_to_reg ? Opcode::MOV_r32_m32 : Opcode::MOV_m32_r32); break;
+			case DataSize::QuadWord: inst.opcode(mem_to_reg ? Opcode::MOV_r64_m64 : Opcode::MOV_m64_r64); break;
+		}
 
-		inst.opcode(Opcode::MMB);
+		inst.add_byte(location_to_byte(location));
+		inst.add_byte(bits<0, 4>(mem_to_reg ? reg : location.splitRegister) | bits<4, 4>(mem_to_reg ? location.splitRegister : reg));
 
-		UInt8 pars = 0;
-		pars = utils::set_bits<0, 2>(pars, scast(UInt8, argMode));
-		pars = utils::set_bits<2, 3>(pars, scast(UInt8, destLoc));
-		pars = utils::set_bits<5, 3>(pars, scast(UInt8, srcLoc));
-		inst.add_byte(pars);
-
-		push_arg(inst, argMode, blockSize);
-
-		push_loc_arg(inst, argMode, destLoc, dest);
-		if (has_delta(destLoc))
-			push_arg(inst, argMode, destDelta);
-
-		push_loc_arg(inst, argMode, srcLoc, src);
-		if (has_delta(srcLoc))
-			push_arg(inst, argMode, srcDelta);
+		if(location.delta)
+			add_value(inst, location.delta);
 
 		return inst;
 	}
 
-	Instruction lea(
-		bool srcStaticLoc,
-		bool srcHasDelta,
-		UInt8 destRegister,
-		UInt64 src,
-		UInt64 srcDelta,
-		ArgumentMode argMode
-	)
+	Instruction mov(DataSize size, Register dest, const Value& immediateValue)
 	{
 		Instruction inst;
 
-		if (is_auto_argmode(argMode))
-			argMode = detect_argmode({ src, srcDelta });
+		switch (size)
+		{
+			case DataSize::Byte: inst.opcode(Opcode::MOV_r8_imm8); break;
+			case DataSize::Word: inst.opcode(Opcode::MOV_r16_imm16); break;
+			case DataSize::DoubleWord: inst.opcode(Opcode::MOV_r32_imm32); break;
+			case DataSize::QuadWord: inst.opcode(Opcode::MOV_r64_imm64); break;
+		}
+
+		inst.add_byte(bits<0, 4>(dest));
+		add_value(inst, immediateValue);
+
+		return inst;
+	}
+
+	Instruction mov(DataSize size, const MemoryLocation& dest, const Value& immediateValue)
+	{
+		Instruction inst;
+
+		switch (size)
+		{
+			case DataSize::Byte: inst.opcode(Opcode::MOV_m8_imm8); break;
+			case DataSize::Word: inst.opcode(Opcode::MOV_m16_imm16); break;
+			case DataSize::DoubleWord: inst.opcode(Opcode::MOV_m32_imm32); break;
+			case DataSize::QuadWord: inst.opcode(Opcode::MOV_m64_imm64); break;
+		}
+
+		inst.add_byte(location_to_byte(dest));
+		inst.add_byte(bits<0, 4>(dest.splitRegister));
+		add_value(inst, immediateValue);
+
+		if (dest.delta)
+			add_value(inst, dest.delta);
+
+		return inst;
+	}
+
+	Instruction lea(Register dest, const MemoryLocation& src)
+	{
+		Instruction inst;
 
 		inst.opcode(Opcode::LEA);
 
-		UInt8 pars = 0;
-		pars = utils::set_bits<0, 2>(pars, scast(UInt8, argMode));
-		pars = utils::set_bits<2, 2>(pars, scast(UInt8, (srcStaticLoc ? 2 : 0) + (srcHasDelta ? 1 : 0)));
-		inst.add_byte(pars);
+		inst.add_byte(location_to_byte(src));
+		inst.add_byte(bits<0, 4>(dest) | bits<4, 4>(src.splitRegister));
 
-		inst.add_byte(destRegister);
-		push_arg(inst, argMode, src);
-		if (srcHasDelta)
-			push_arg(inst, argMode, srcDelta);
+		if (src.delta)
+			add_value(inst, src.delta);
 
 		return inst;
 	}
 
-	Instruction new_(
-		LocationMode destLoc,
-		bool addHeapRef,
-		UInt64 dest,
-		UInt64 destDelta,
-		UInt64 blockSize,
-		ArgumentMode argMode
-	)
+	Instruction mmb(DataSize size, Register dest, Register src, const UnsignedInteger& block_bytes)
 	{
 		Instruction inst;
 
-		if (is_auto_argmode(argMode))
-			argMode = detect_argmode({ dest, destDelta, blockSize });
+		switch (size)
+		{
+			case DataSize::Byte: inst.opcode(Opcode::MMB_sb); break;
+			case DataSize::Word: inst.opcode(Opcode::MMB_sw); break;
+			case DataSize::DoubleWord: inst.opcode(Opcode::MMB_sd); break;
+			case DataSize::QuadWord: inst.opcode(Opcode::MMB_sq); break;
+		}
 
-		inst.opcode(Opcode::NEW);
-
-		UInt8 pars = 0;
-		pars = utils::set_bits<0, 2>(pars, scast(UInt8, argMode));
-		pars = utils::set_bits<2, 3>(pars, scast(UInt8, destLoc));
-		pars = utils::set_bits<5, 1>(pars, scast(UInt8, addHeapRef));
-		inst.add_byte(pars);
-
-		push_loc_arg(inst, argMode, destLoc, dest);
-		if (has_delta(destLoc))
-			push_arg(inst, argMode, destDelta);
-		push_arg(inst, argMode, blockSize);
+		inst.add_byte(bits<0, 4>(dest) | bits<4, 4>(src));
+		add_value(inst, block_bytes);
 
 		return inst;
 	}
 
-	Instruction del(
-		LocationMode srcLoc,
-		UInt64 src,
-		UInt64 srcDelta,
-		ArgumentMode argMode
-	)
+	Instruction new_(bool add_ref, Register dest, const UnsignedInteger& block_bytes)
 	{
 		Instruction inst;
 
-		if (is_auto_argmode(argMode))
-			argMode = detect_argmode({ src, srcDelta });
+		inst.opcode(Opcode::NEW_r_s);
 
-		inst.opcode(Opcode::DEL);
-
-		UInt8 pars = 0;
-		pars = utils::set_bits<0, 2>(pars, scast(UInt8, argMode));
-		pars = utils::set_bits<2, 3>(pars, scast(UInt8, srcLoc));
-		inst.add_byte(pars);
-
-		push_loc_arg(inst, argMode, srcLoc, src);
-		if (has_delta(srcLoc))
-			push_arg(inst, argMode, srcDelta);
+		inst.add_byte(bits<0, 4>(dest) | bits<4, 2>(block_bytes.bytes()) | bits<6, 1>(add_ref));
+		add_value(inst, block_bytes);
 
 		return inst;
 	}
 
-	Instruction mhr(
-		LocationMode targetLoc,
-		bool isIncrease,
-		UInt64 target,
-		UInt64 targetDelta,
-		ArgumentMode argMode
-	)
+	Instruction new_(bool add_ref, const MemoryLocation& dest, const UnsignedInteger& block_bytes)
 	{
 		Instruction inst;
 
-		if (is_auto_argmode(argMode))
-			argMode = detect_argmode({ target, targetDelta });
+		inst.opcode(Opcode::NEW_m_s);
 
-		inst.opcode(Opcode::MHR);
+		inst.add_byte(location_to_byte(dest));
+		inst.add_byte(bits<0, 4>(dest.splitRegister) | bits<4, 2>(block_bytes.bytes()) | bits<6, 1>(add_ref));
+		add_value(inst, block_bytes);
 
-		UInt8 pars = 0;
-		pars = utils::set_bits<0, 2>(pars, scast(UInt8, argMode));
-		pars = utils::set_bits<2, 3>(pars, scast(UInt8, targetLoc));
-		pars = utils::set_bits<5, 1>(pars, scast(UInt8, isIncrease));
-		inst.add_byte(pars);
-
-		push_loc_arg(inst, argMode, targetLoc, target);
-		if (has_delta(targetLoc))
-			push_arg(inst, argMode, targetDelta);
+		if (dest.delta)
+			add_value(inst, dest.delta);
 
 		return inst;
 	}
 
-	Instruction cst(
-		DataType destType,
-		DataType srcType,
-		UInt8 registerTarget
-	)
+	Instruction del(Register src)
 	{
 		Instruction inst;
 
-		inst.opcode(Opcode::CST);
+		inst.opcode(Opcode::DEL_r);
 
-		UInt8 pars = 0;
-		pars = utils::set_bits<0, 4>(pars, scast(UInt8, destType));
-		pars = utils::set_bits<4, 4>(pars, scast(UInt8, srcType));
-		inst.add_byte(pars);
+		inst.add_byte(bits<0, 4>(src));
 
-		inst.add_byte(registerTarget);
+		return inst;
+	}
+
+	Instruction del(const MemoryLocation& src)
+	{
+		Instruction inst;
+
+		inst.opcode(Opcode::DEL_m);
+
+		inst.add_byte(location_to_byte(src));
+		inst.add_byte(bits<0, 4>(src.splitRegister));
+
+		if (src.delta)
+			add_value(inst, src.delta);
+
+		return inst;
+	}
+
+	Instruction mhr(bool increase, Register src)
+	{
+		Instruction inst;
+
+		inst.opcode(Opcode::MHR_r);
+
+		inst.add_byte(bits<0, 4>(src) | bits<4, 1>(increase));
+
+		return inst;
+	}
+
+	Instruction mhr(bool increase, const MemoryLocation& src)
+	{
+		Instruction inst;
+
+		inst.opcode(Opcode::DEL_m);
+
+		inst.add_byte(location_to_byte(src));
+		inst.add_byte(bits<0, 4>(src.splitRegister) | bits<4, 1>(increase));
+
+		if (src.delta)
+			add_value(inst, src.delta);
+
+		return inst;
+	}
+
+	Instruction cst(DataType dest_type, DataType src_type, Register target)
+	{
+		Instruction inst;
+
+		inst.opcode(Opcode::CST_r);
+
+		inst.add_byte(bits<0, 4>(target));
+		inst.add_byte(bits<0, 4>(dest_type) | bits<4, 4>(src_type));
+
+		return inst;
+	}
+
+	Instruction cst(DataType dest_type, DataType src_type, const MemoryLocation& target)
+	{
+		Instruction inst;
+
+		inst.opcode(Opcode::CST_m);
+
+		inst.add_byte(location_to_byte(target));
+		inst.add_byte(bits<0, 4>(target.splitRegister));
+		inst.add_byte(bits<0, 4>(dest_type) | bits<4, 4>(src_type));
+
+		if (target.delta)
+			add_value(inst, target.delta);
 
 		return inst;
 	}

@@ -140,19 +140,9 @@ namespace kram::bin
 
 namespace kram::bin
 {
-	struct StaticValue
-	{
-		Size size = 0;
-		void* data = nullptr;
-
-		StaticValue() = default;
-		inline StaticValue(Size size) : size{ size }, data{ new std::byte[size] } {}
-		inline ~StaticValue() { if (data) delete data; size = 0; data = nullptr; }
-	};
-
 	struct Function
 	{
-		UInt8 registerCount;
+		Size parameterCount;
 		Size stackCount;
 		std::uintptr_t codeOffset;
 	};
@@ -169,7 +159,7 @@ namespace kram::bin
 		Size connectionCount = 0;
 		Size codeCount = 0;
 		
-		StaticValue* statics = nullptr;
+		std::byte* statics = nullptr;
 		Function* functions = nullptr;
 		Chunk* connections = nullptr;
 		std::byte* code = nullptr;
@@ -189,7 +179,7 @@ namespace kram::bin
 	class FunctionBuilder
 	{
 	private:
-		UInt8 _registers = 0;
+		Size _params = 0;
 		Size _stackSize = 0;
 		op::InstructionBuilder _code;
 		Size __codeByteCount = 0;
@@ -203,10 +193,10 @@ namespace kram::bin
 		FunctionBuilder& operator= (const FunctionBuilder&) = default;
 		FunctionBuilder& operator=(FunctionBuilder&&) noexcept = default;
 
-		inline void registers(UInt8 registers) { _registers = registers; }
+		inline void parameters(Size parameters) { _params = parameters; }
 		inline void stack_size(Size stack_size) { _stackSize = stack_size; }
 
-		inline UInt8 registers() const { return _registers; }
+		inline Size parameters() const { return _params; }
 		inline Size stack_size() const { return _stackSize; }
 
 		inline void code(const op::InstructionBuilder& code) { _code = code; }

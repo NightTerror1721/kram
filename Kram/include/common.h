@@ -3,6 +3,7 @@
 #include <type_traits>
 #include <algorithm>
 #include <iostream>
+#include <sstream>
 #include <utility>
 #include <cstdint>
 #include <cstring>
@@ -11,6 +12,12 @@
 #include <set>
 #include <map>
 #include <bit>
+#include <new>
+
+#ifndef __cpp_lib_concepts
+#define __cpp_lib_concepts
+#endif
+#include <concepts>
 
 namespace kram
 {
@@ -28,41 +35,6 @@ namespace kram
 
 	class KramState;
 	class Heap;
-
-	union Register
-	{
-		UInt8 u8;
-		UInt16 u16;
-		UInt32 u32;
-		UInt64 u64;
-
-		Int8 s8;
-		Int16 s16;
-		Int32 s32;
-		Int64 s64;
-
-		float f32;
-		double f64;
-
-
-		UInt8* addr_u8;
-		UInt16* addr_u16;
-		UInt32* addr_u32;
-		UInt64* addr_u64;
-
-		Int8* addr_s8;
-		Int16* addr_s16;
-		Int32* addr_s32;
-		Int64* addr_s64;
-
-		float* addr_f32;
-		double* addr_f64;
-
-		void* addr;
-
-
-		UInt64 reg;
-	};
 }
 
 namespace kram::types
@@ -184,4 +156,16 @@ namespace kram::utils
 #define scast(_Type, _Value) static_cast<_Type>(_Value)
 #define rcast(_Type, _Value) reinterpret_cast<_Type>(_Value)
 
+
+#define _kram_malloc(_Type, _Size) reinterpret_cast<_Type*>(::operator new(_Size))
+#define _kram_free(_Ptr) ::operator delete(_Ptr)
+
+
+namespace kram::utils
+{
+	template<typename _Ty = void>
+	forceinline _Ty* malloc_raw(Size size) { return _kram_malloc(_Ty, size); }
+
+	forceinline void free_raw(void* ptr) noexcept { _kram_free(ptr); }
+}
 
