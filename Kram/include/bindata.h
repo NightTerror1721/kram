@@ -227,8 +227,8 @@ namespace kram::bin
 		inline void add_connection(Chunk* chunk) { _connections.push_back(chunk); }
 
 		inline ChunkBuilder& operator<< (Size static_size) { return add_static(static_size), *this; }
-		inline ChunkBuilder& operator<< (const FunctionBuilder& function) { return add_function(function), * this; }
-		inline ChunkBuilder& operator<< (Chunk* chunk) { return add_connection(chunk), * this; }
+		inline ChunkBuilder& operator<< (const FunctionBuilder& function) { return add_function(function), *this; }
+		inline ChunkBuilder& operator<< (Chunk* chunk) { return add_connection(chunk), *this; }
 
 		void build(Chunk* chunk);
 	};

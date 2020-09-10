@@ -18,14 +18,14 @@ namespace kram::op
 		MOV_r8_m8,
 		MOV_r16_m16,
 		MOV_r32_m32,
-		MOV_r64_m64, /* <segment:2|has_reg2:1|reg2_split:2|has_delta:1|delta_size:2>, <1reg:4|2reg:4>, [delta:8-64]
+		MOV_r64_m64, /* <dest_reg:4|(padding):4>, <segment:2|has_reg2:1|reg2_split:2|has_delta:1|delta_size:2>, <base_reg:4|split_reg:4>, [delta:8-64]
 					  * Move register or memory data to register.
 					  */
 
 		MOV_m8_r8,
 		MOV_m16_r16,
 		MOV_m32_r32,
-		MOV_m64_r64, /* <segment:2|has_reg1:1|reg1_split:2|has_delta:1|delta_size:2>, <1reg:4|2reg:4>, [delta:8-64]
+		MOV_m64_r64, /* <src_reg:4|(padding):4>, <segment:2|has_reg2:1|reg2_split:2|has_delta:1|delta_size:2>, <base_reg:4|split_reg:4>, [delta:8-64]
 					  * Move register data to register or memory.
 					  */
 
@@ -39,11 +39,11 @@ namespace kram::op
 		MOV_m8_imm8,
 		MOV_m16_imm16,
 		MOV_m32_imm32,
-		MOV_m64_imm64, /* <segment:2|has_reg1:1|reg1_split:2|has_delta:1|delta_size:2>, <1reg:4|<padding>:4>, <value:8-64>, [delta:8-64]
+		MOV_m64_imm64, /* <value:8-64>, <segment:2|has_reg2:1|reg2_split:2|has_delta:1|delta_size:2>, <base_reg:4|split_reg:4>, [delta:8-64]
 						* Move immediate value to register or memory.
 						*/
 
-		LEA, /* <segment:2|has_reg2:1|reg2_split:2|has_delta:1|delta_size:2>, <1reg:4|2reg:4>, [delta:8-64]
+		LEA, /* <dest_reg:4|(padding):4>, <segment:2|has_reg2:1|reg2_split:2|has_delta:1|delta_size:2>, <base_reg:4|split_reg:4>, [delta:8-64]
 			  * Load effective addres from memory to register
 			  */
 
@@ -58,7 +58,7 @@ namespace kram::op
 				  * Allocate new memory block of "bytes" bytes and store address into dest_reg
 				  */
 
-		NEW_m_s, /* <segment:2|has_reg1:1|reg1_split:2|has_delta:1|delta_size:2>, <1reg:4|bytes_size:2|add_ref:1|<padding>:1>, <bytes:8-64>, [delta:8-64]
+		NEW_m_s, /* <bytes_size:2|add_ref:1|<padding>:5>, <bytes:8-64>, <segment:2|has_reg2:1|reg2_split:2|has_delta:1|delta_size:2>, <base_reg:4|split_reg:4>, [delta:8-64]
 				  * Allocate new memory block of "bytes" bytes and store address into memory
 			      */
 
@@ -66,7 +66,7 @@ namespace kram::op
 				* Free memory block from src_rec
 				*/
 
-		DEL_m, /* <segment:2|has_reg1:1|reg1_split:2|has_delta:1|delta_size:2>, <1reg:4|<padding>:4>, [delta:8-64]
+		DEL_m, /* <segment:2|has_reg2:1|reg2_split:2|has_delta:1|delta_size:2>, <base_reg:4|split_reg:4>, [delta:8-64]
 				* Free memory block from memory
 				*/
 
@@ -74,7 +74,7 @@ namespace kram::op
 			    * Increase or decrease memory heap object counter reference from src_reg
 			    */
 
-		MHR_m, /* <segment:2|has_reg1:1|reg1_split:2|has_delta:1|delta_size:2>, <1reg:4|ref_inc:1|<padding>:3>, [delta:8-64]
+		MHR_m, /* <ref_inc:1|(padding):7>, <segment:2|has_reg2:1|reg2_split:2|has_delta:1|delta_size:2>, <base_reg:4|split_reg:4>, [delta:8-64]
 				* Increase or decrease memory heap object counter reference from memory
 				*/
 
@@ -82,10 +82,53 @@ namespace kram::op
 			    * Cast value from "src_type" to "dest_type" in register.
 			    */
 
-		CST_m, /* <segment:2|has_reg1:1|reg1_split:2|has_delta:1|delta_size:2>, <1reg:4|<padding>:4>, <dest_type:4|src_type:4>, [delta:8-64]
+		CST_m, /* <dest_type:4|src_type:4>, <segment:2|has_reg2:1|reg2_split:2|has_delta:1|delta_size:2>, <base_reg:4|split_reg:4>, [delta:8-64]
 				* Increase or decrease memory heap object counter reference from memory
 				*/
 	};
+}
+
+namespace kram::assembler
+{
+	enum class AssemblerOpcode
+	{
+		NOP,
+		MOV,
+		MMB,
+		LEA,
+		NEW,
+		NEWR,
+		DEL,
+		MHRI,
+		MHRD,
+		CAST
+	};
+
+	constexpr const char* asm_opcode_name(AssemblerOpcode opcode)
+	{
+		switch (opcode)
+		{
+			case AssemblerOpcode::NOP: return "nop";
+			case AssemblerOpcode::MOV: return "mov";
+			case AssemblerOpcode::MMB: return "mmb";
+			case AssemblerOpcode::LEA: return "lea";
+			case AssemblerOpcode::NEW: return "new";
+			case AssemblerOpcode::NEWR: return "newr";
+			case AssemblerOpcode::DEL: return "del";
+			case AssemblerOpcode::MHRI: return "mhri";
+			case AssemblerOpcode::MHRD: return "mhrd";
+			case AssemblerOpcode::CAST: return "cast";
+		}
+
+		return "<unknown-opcode>";
+	}
+
+	bool is_valid_asm_opcode(const char* name);
+	bool is_valid_asm_opcode(const std::string& name);
+
+	AssemblerOpcode get_asm_opcode_by_name(const char* name);
+	AssemblerOpcode get_asm_opcode_by_name(const std::string& name);
+
 }
 
 namespace kram::op
@@ -288,209 +331,4 @@ namespace kram::op
 
 		friend inline std::ostream& operator<< (std::ostream& os, const InstructionBuilder& ib) { return ib.build(os), os; }
 	};
-}
-
-namespace kram::op::build
-{
-	enum class DataSize { Byte, Word, DoubleWord, QuadWord };
-
-	enum class DataType
-	{
-		SignedByte, SignedWord, SignedDoubleWord, SignedQuadWord,
-		UnsignedByte, UnsignedWord, UnsignedDoubleWord, UnsignedQuadWord,
-		FloatingDecimal, DoubleDecimal
-	};
-
-	enum class Register : UInt8
-	{
-		r0 = 0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15,
-		sd = r9,
-		sb = r10,
-		sp = r11,
-		sr = r12,
-		ch = r13,
-		st = r14,
-		ip = r15
-	};
-
-	enum class Segment : UInt8
-	{
-		NoSegment,
-		Stack,
-		Static
-	};
-
-	class Value
-	{
-	private:
-		template<typename _Ty>
-		requires std::integral<_Ty> || std::floating_point<_Ty>
-		static constexpr UInt8 _adapt(_Ty data)
-		{
-			if constexpr (std::integral<_Ty>)
-				return static_cast<UInt64>(data);
-			else if constexpr (sizeof(_Ty) == 4)
-				return static_cast<UInt64>(reinterpret_cast<UInt32>(&data));
-			else return reinterpret_cast<UInt64>(&data);
-		}
-
-		template<typename _Ty>
-		requires std::integral<_Ty> || std::floating_point<_Ty>
-		static constexpr DataType _detect_type(_Ty data)
-		{
-			if constexpr (std::unsigned_integral<_Ty>)
-			{
-				if constexpr (sizeof(_Ty) == 1) return DataType::UnsignedByte;
-				else if constexpr (sizeof(_Ty) == 2) return DataType::UnsignedWord;
-				else if constexpr (sizeof(_Ty) == 4) return DataType::UnsignedDoubleWord;
-				else return DataType::UnsignedQuadWord;
-			}
-			else if constexpr (std::signed_integral<_Ty>)
-			{
-				if constexpr (sizeof(_Ty) == 1) return DataType::SignedByte;
-				else if constexpr (sizeof(_Ty) == 2) return DataType::SignedWord;
-				else if constexpr (sizeof(_Ty) == 4) return DataType::SignedDoubleWord;
-				else return DataType::SignedQuadWord;
-			}
-			else if constexpr (sizeof(_Ty) == 4)
-				return DataType::FloatingDecimal;
-			else return DataType::DoubleDecimal;
-		}
-
-		UInt64 _data = 0;
-		DataType _type = DataType::UnsignedByte;
-
-	public:
-		Value() = default;
-
-		template<typename _Ty>
-		requires std::integral<_Ty> || std::floating_point<_Ty>
-		Value(_Ty data) : _data{ _adapt<_Ty>(data) }, _type{ _detect_type<_Ty>(data) } {}
-
-		template<typename _Ty>
-		requires std::integral<_Ty> || std::floating_point<_Ty>
-		inline Value& operator= (_Ty data) { _data = _adapt<_Ty>(data), _type = _detect_type<_Ty>(data); }
-
-		inline DataSize bytes() const
-		{
-			if (_data > 0xFFFFFFFFULL) return DataSize::QuadWord;
-			else if (_data > 0xFFFFULL) return DataSize::DoubleWord;
-			else if (_data > 0xFFULL) return DataSize::Word;
-			else return DataSize::Byte;
-		}
-
-		inline DataType type() const { return _type; }
-
-		inline operator UInt64() const { return _data; }
-	};
-
-	class UnsignedInteger
-	{
-	private:
-		template<std::integral _Ty>
-		static constexpr UInt64 _adapt(_Ty value) { return static_cast<UInt64>(value); }
-
-		UInt64 _value = 0;
-
-	public:
-		UnsignedInteger() = default;
-
-		template<std::integral _Ty>
-		UnsignedInteger(_Ty value) : _value{ _adapt<_Ty>(value) } {}
-
-		template<std::integral _Ty>
-		inline UnsignedInteger& operator= (_Ty value) { _value = _adapt<_Ty>(value); }
-
-		inline DataSize bytes() const
-		{
-			if (_value > 0xFFFFFFFFULL) return DataSize::QuadWord;
-			else if (_value > 0xFFFFULL) return DataSize::DoubleWord;
-			else if (_value > 0xFFULL) return DataSize::Word;
-			else return DataSize::Byte;
-		}
-
-		inline bool is_zero() const { return _value == 0; }
-
-		inline operator UInt64() const { return _value; }
-
-		inline operator bool() const { return _value; }
-
-		inline bool operator! () const { return !_value; }
-	};
-
-	struct MemoryLocation
-	{
-		Segment segment;
-		bool enabledSplitRegister;
-		Register splitRegister;
-		DataSize splitMode;
-		UnsignedInteger delta;
-	};
-
-	inline MemoryLocation location(Segment segment, bool enabledSplitRegister, Register splitRegister, DataSize splitMode, const UnsignedInteger& delta)
-	{
-		return MemoryLocation{
-			.segment = segment,
-			.enabledSplitRegister = enabledSplitRegister,
-			.splitRegister = splitRegister,
-			.splitMode = splitMode,
-			.delta = delta
-		};
-	}
-	inline MemoryLocation location(Segment segment, Register splitRegister, DataSize splitMode = DataSize::Byte, const UnsignedInteger& delta = {})
-	{
-		return MemoryLocation{
-			.segment = segment,
-			.enabledSplitRegister = true,
-			.splitRegister = splitRegister,
-			.splitMode = splitMode,
-			.delta = delta
-		};
-	}
-	inline MemoryLocation location(Segment segment, const UnsignedInteger& delta = {})
-	{
-		return MemoryLocation{
-			.segment = segment,
-			.enabledSplitRegister = false,
-			.splitRegister = Register::r0,
-			.splitMode = DataSize::Byte,
-			.delta = delta
-		};
-	}
-	inline MemoryLocation location(const UnsignedInteger& address)
-	{
-		return MemoryLocation{
-			.segment = Segment::NoSegment,
-			.enabledSplitRegister = false,
-			.splitRegister = Register::r0,
-			.splitMode = DataSize::Byte,
-			.delta = address
-		};
-	}
-
-
-
-	Instruction mov(DataSize size, Register dest, Register src);
-	Instruction mov(DataSize size, bool mem_to_reg, const MemoryLocation& location, Register reg);
-	Instruction mov(DataSize size, Register dest, const Value& immediateValue);
-	Instruction mov(DataSize size, const MemoryLocation& dest, const Value& immediateValue);
-
-	inline Instruction mov(DataSize size, Register dest, const MemoryLocation& src) { return mov(size, true, src, dest); }
-	inline Instruction mov(DataSize size, const MemoryLocation& dest, Register src) { return mov(size, false, dest, src); }
-
-	Instruction lea(Register dest, const MemoryLocation& src);
-
-	Instruction mmb(DataSize size, Register dest, Register src, const UnsignedInteger& block_bytes);
-
-	Instruction new_(bool add_ref, Register dest, const UnsignedInteger& block_bytes);
-	Instruction new_(bool add_ref, const MemoryLocation& dest, const UnsignedInteger& block_bytes);
-
-	Instruction del(Register src);
-	Instruction del(const MemoryLocation& src);
-
-	Instruction mhr(bool increase, Register src);
-	Instruction mhr(bool increase, const MemoryLocation& src);
-
-	Instruction cst(DataType dest_type, DataType src_type, Register target);
-	Instruction cst(DataType dest_type, DataType src_type, const MemoryLocation& target);
 }

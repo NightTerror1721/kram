@@ -4,11 +4,12 @@
 #include "bindata.h"
 #include "opcodes.h"
 #include "runtime.h"
-#include "kram_asm_parser.h"
+#include "asm_parser.h"
 #include "static_array.h"
+#include "cperrors.h"
 
 using namespace kram::op;
-using namespace kram::op::build;
+using namespace kram::assembler;
 
 int add(int a, int b)
 {
@@ -32,9 +33,25 @@ int main(int argc, char** argv)
 
 	int x = add(50, -25);*/
 
-	Instruction inst;
-	inst = mov(DataSize::DoubleWord, Register::r0, location(Segment::Stack, 5));
+	SplitMode mode = false;
 
+	Instruction inst;
+	inst = instruction::mov(DataSize::DoubleWord, Register::r0, location(Segment::Stack, 5));
+
+
+	kram::utils::CompilerError err;
+	std::exception ex;
+
+	const kram::utils::CompilerError& rerr = err;
+	const std::exception& rex = ex;
+	const std::exception& rex2 = err;
+
+	bool result = typeid(rex2) == typeid(err);
+
+	std::cout << typeid(rerr).name() << std::endl;
+	std::cout << typeid(rex).name() << std::endl;
+	std::cout << typeid(rex2).name() << std::endl;
+	std::cout << (typeid(rex2) == typeid(err)) << std::endl;
 
 	return 0;
 }

@@ -236,6 +236,44 @@ namespace kram::runtime
 				: *rcast(_Ty*, (state.regs.sd.addr_stack_offset + offset));
 		}
 
+		template<typename _SizeType>
+		forceinline _SizeType& pop_memloc(RuntimeState& state)
+		{
+			UInt8 pars = pop_arg<UInt8>(state);
+			UInt8 regs = pop_arg<UInt8>(state);
+			std::uintptr_t addr = 0;
+
+			if (test<2>(pars))
+			{
+				switch (bits<3, 2>(pars))
+				{
+					case 0: addr += state.regs.by_index[bits<4, 4>(regs)].u64; break;
+					case 1: addr += state.regs.by_index[bits<4, 4>(regs)].u64 * 2; break;
+					case 2: addr += state.regs.by_index[bits<4, 4>(regs)].u64 * 4; break;
+					case 3: addr += state.regs.by_index[bits<4, 4>(regs)].u64 * 8; break;
+				}
+			}
+			if (test<5>(pars))
+			{
+				switch (bits<6, 2>(pars))
+				{
+					case 0: addr += pop_arg<UInt8>(state); break;
+					case 1: addr += pop_arg<UInt16>(state); break;
+					case 2: addr += pop_arg<UInt32>(state); break;
+					case 3: addr += pop_arg<UInt64>(state); break;
+				}
+			}
+			switch (bits<0, 2>(pars))
+			{
+				case 0: return *rcast(_SizeType*, (addr != 0 ? addr : scast(std::uintptr_t, -1)));
+				case 1: return from_mem<_SizeType, true>(state, addr);
+				case 2: return from_mem<_SizeType, false>(state, addr);
+				case 3: return *rcast(_SizeType*, (state.regs.by_index[bits<0, 4>(regs)].addr_stack_offset + addr));
+			}
+
+			return *rcast(_SizeType*, scast(std::uintptr_t, -1));
+		}
+
 		template<typename _DestType, typename _SrcType>
 		forceinline void raw_cast_to(void* dst, _SrcType value)
 		{
@@ -297,60 +335,12 @@ namespace kram::runtime
 		template<std::unsigned_integral _SizeType, bool _Swap>
 		forceinline void mov_rm_rm(RuntimeState& state)
 		{
-			UInt8 pars = pop_arg<UInt8>(state);
-			UInt8 regs = pop_arg<UInt8>(state);
-			std::uintptr_t addr = 0;
-			if (test<2>(pars))
-			{
-				if constexpr (_Swap)
-				{
-					switch (bits<3, 2>(pars))
-					{
-						case 0: addr += state.regs.by_index[bits<0, 4>(regs)].u64; break;
-						case 1: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 2; break;
-						case 2: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 4; break;
-						case 3: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 8; break;
-					}
-				}
-				else
-				{
-					switch (bits<3, 2>(pars))
-					{
-						case 0: addr += state.regs.by_index[bits<4, 4>(regs)].u64; break;
-						case 1: addr += state.regs.by_index[bits<4, 4>(regs)].u64 * 2; break;
-						case 2: addr += state.regs.by_index[bits<4, 4>(regs)].u64 * 4; break;
-						case 3: addr += state.regs.by_index[bits<4, 4>(regs)].u64 * 8; break;
-					}
-				}
-			}
-			if (test<5>(pars))
-			{
-				switch (bits<6, 2>(pars))
-				{
-					case 0: addr += pop_arg<UInt8>(state); break;
-					case 1: addr += pop_arg<UInt16>(state); break;
-					case 2: addr += pop_arg<UInt32>(state); break;
-					case 3: addr += pop_arg<UInt64>(state); break;
-				}
-			}
+			UInt8 regidx = pop_arg_bits<0, 4>(state);
+			_SizeType& loc = pop_memloc<_SizeType>(state);
+
 			if constexpr (_Swap)
-			{
-				switch (bits<0, 2>(pars))
-				{
-					case 0: if(addr != 0) *rcast(_SizeType*, addr) = reg<_SizeType>(state, bits<4, 4>(regs)); return;
-					case 1: from_mem<_SizeType, true>(state, addr) = reg<_SizeType>(state, bits<4, 4>(regs)); return;
-					case 2: from_mem<_SizeType, false>(state, addr) = reg<_SizeType>(state, bits<4, 4>(regs)); return;
-				}
-			}
-			else
-			{
-				switch (bits<0, 2>(pars))
-				{
-					case 0: if (addr != 0) reg<_SizeType>(state, bits<0, 4>(regs)) = *rcast(_SizeType*, addr); return;
-					case 1: reg<_SizeType>(state, bits<0, 4>(regs)) = from_mem<_SizeType, true>(state, addr); return;
-					case 2: reg<_SizeType>(state, bits<0, 4>(regs)) = from_mem<_SizeType, false>(state, addr); return;
-				}
-			}
+				loc = reg<_SizeType>(state, regidx);
+			else reg<_SizeType>(state, regidx) = loc;
 		}
 
 		template<std::unsigned_integral _SizeType>
@@ -371,69 +361,14 @@ namespace kram::runtime
 		template<std::unsigned_integral _SizeType>
 		forceinline void mov_m_imm(RuntimeState& state)
 		{
-			UInt8 pars = pop_arg<UInt8>(state);
-			UInt8 regs = pop_arg<UInt8>(state);
 			_SizeType imm = pop_arg<_SizeType>(state);
-			std::uintptr_t addr = 0;
-			if (test<2>(pars))
-			{
-				switch (bits<3, 2>(pars))
-				{
-					case 0: addr += state.regs.by_index[bits<0, 4>(regs)].u64; break;
-					case 1: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 2; break;
-					case 2: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 4; break;
-					case 3: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 8; break;
-				}
-			}
-			if (test<5>(pars))
-			{
-				switch (bits<6, 2>(pars))
-				{
-					case 0: addr += pop_arg<UInt8>(state); break;
-					case 1: addr += pop_arg<UInt16>(state); break;
-					case 2: addr += pop_arg<UInt32>(state); break;
-					case 3: addr += pop_arg<UInt64>(state); break;
-				}
-			}
-			switch (bits<0, 2>(pars))
-			{
-				case 0: if (addr != 0) *rcast(_SizeType*, addr) = imm; return;
-				case 1: from_mem<_SizeType, true>(state, addr) = imm; return;
-				case 2: from_mem<_SizeType, false>(state, addr) = imm; return;
-			}
+			pop_memloc<_SizeType>(state) = imm;
 		}
 
 		forceinline void lea(RuntimeState& state)
 		{
-			UInt8 pars = pop_arg<UInt8>(state);
-			UInt8 regs = pop_arg<UInt8>(state);
-			std::uintptr_t addr = 0;
-			if (test<2>(pars))
-			{
-				switch (bits<3, 2>(pars))
-				{
-					case 0: addr += state.regs.by_index[bits<4, 4>(regs)].u64; break;
-					case 1: addr += state.regs.by_index[bits<4, 4>(regs)].u64 * 2; break;
-					case 2: addr += state.regs.by_index[bits<4, 4>(regs)].u64 * 4; break;
-					case 3: addr += state.regs.by_index[bits<4, 4>(regs)].u64 * 8; break;
-				}
-			}
-			if (test<5>(pars))
-			{
-				switch (bits<6, 2>(pars))
-				{
-					case 0: addr += pop_arg<UInt8>(state); break;
-					case 1: addr += pop_arg<UInt16>(state); break;
-					case 2: addr += pop_arg<UInt32>(state); break;
-					case 3: addr += pop_arg<UInt64>(state); break;
-				}
-			}
-			switch (bits<0, 2>(pars))
-			{
-				case 0: state.regs.by_index[bits<0, 4>(regs)].stack_offset = addr; return;
-				case 1: state.regs.by_index[bits<0, 4>(regs)].addr_stack_offset = state.stack->base + state.regs.sb.stack_offset + addr; return;
-				case 2: state.regs.by_index[bits<0, 4>(regs)].addr_stack_offset = state.regs.sd.addr_stack_offset + addr; return;
-			}
+			UInt8 reg = pop_arg_bits<0, 4>(state);
+			state.regs.by_index[reg].addr = &pop_memloc<void*>(state);
 		}
 
 		template<std::unsigned_integral _SizeType>
@@ -464,10 +399,8 @@ namespace kram::runtime
 		forceinline void new_m_s(RuntimeState& state)
 		{
 			UInt8 pars = pop_arg<UInt8>(state);
-			UInt8 regs = pop_arg<UInt8>(state);
-
 			Size size;
-			switch (bits<4, 2>(regs))
+			switch (bits<0, 2>(pars))
 			{
 				case 0: size = pop_arg<UInt8>(state); break;
 				case 1: size = pop_arg<UInt16>(state); break;
@@ -476,33 +409,7 @@ namespace kram::runtime
 				default: size = 0;
 			}
 
-			std::uintptr_t addr = 0;
-			if (test<2>(pars))
-			{
-				switch (bits<3, 2>(pars))
-				{
-					case 0: addr += state.regs.by_index[bits<0, 4>(regs)].u64; break;
-					case 1: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 2; break;
-					case 2: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 4; break;
-					case 3: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 8; break;
-				}
-			}
-			if (test<5>(pars))
-			{
-				switch (bits<6, 2>(pars))
-				{
-					case 0: addr += pop_arg<UInt8>(state); break;
-					case 1: addr += pop_arg<UInt16>(state); break;
-					case 2: addr += pop_arg<UInt32>(state); break;
-					case 3: addr += pop_arg<UInt64>(state); break;
-				}
-			}
-			switch (bits<0, 2>(pars))
-			{
-				case 0: if (addr != 0) *rcast(void**, addr) = state.heap->malloc(size, test<6>(regs)); return;
-				case 1: from_mem<void*, true>(state, addr) = state.heap->malloc(size, test<6>(regs)); return;
-				case 2: from_mem<void*, false>(state, addr) = state.heap->malloc(size, test<6>(regs)); return;
-			}
+			pop_memloc<void*>(state) = state.heap->malloc(size, test<2>(pars));
 		}
 
 		forceinline void del_r(RuntimeState& state)
@@ -512,36 +419,7 @@ namespace kram::runtime
 
 		forceinline void del_m(RuntimeState& state)
 		{
-			UInt8 pars = pop_arg<UInt8>(state);
-			UInt8 regs = pop_arg<UInt8>(state);
-
-			std::uintptr_t addr = 0;
-			if (test<2>(pars))
-			{
-				switch (bits<3, 2>(pars))
-				{
-					case 0: addr += state.regs.by_index[bits<0, 4>(regs)].u64; break;
-					case 1: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 2; break;
-					case 2: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 4; break;
-					case 3: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 8; break;
-				}
-			}
-			if (test<5>(pars))
-			{
-				switch (bits<6, 2>(pars))
-				{
-					case 0: addr += pop_arg<UInt8>(state); break;
-					case 1: addr += pop_arg<UInt16>(state); break;
-					case 2: addr += pop_arg<UInt32>(state); break;
-					case 3: addr += pop_arg<UInt64>(state); break;
-				}
-			}
-			switch (bits<0, 2>(pars))
-			{
-				case 0: if (addr != 0) state.heap->free(*rcast(void**, addr)); return;
-				case 1: state.heap->free(from_mem<void*, true>(state, addr)); return;
-				case 2: state.heap->free(from_mem<void*, false>(state, addr)); return;
-			}
+			state.heap->free(pop_memloc<void*>(state));
 		}
 
 		forceinline void mhr_r(RuntimeState& state)
@@ -554,48 +432,9 @@ namespace kram::runtime
 
 		forceinline void mhr_m(RuntimeState& state)
 		{
-			UInt8 pars = pop_arg<UInt8>(state);
-			UInt8 regs = pop_arg<UInt8>(state);
-
-			std::uintptr_t addr = 0;
-			if (test<2>(pars))
-			{
-				switch (bits<3, 2>(pars))
-				{
-					case 0: addr += state.regs.by_index[bits<0, 4>(regs)].u64; break;
-					case 1: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 2; break;
-					case 2: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 4; break;
-					case 3: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 8; break;
-				}
-			}
-			if (test<5>(pars))
-			{
-				switch (bits<6, 2>(pars))
-				{
-					case 0: addr += pop_arg<UInt8>(state); break;
-					case 1: addr += pop_arg<UInt16>(state); break;
-					case 2: addr += pop_arg<UInt32>(state); break;
-					case 3: addr += pop_arg<UInt64>(state); break;
-				}
-			}
-			if (test<5>(regs))
-			{
-				switch (bits<0, 2>(pars))
-				{
-					case 0: if (addr != 0) state.heap->increase_ref(*rcast(void**, addr)); return;
-					case 1: state.heap->increase_ref(from_mem<void*, true>(state, addr)); return;
-					case 2: state.heap->increase_ref(from_mem<void*, false>(state, addr)); return;
-				}
-			}
-			else
-			{
-				switch (bits<0, 2>(pars))
-				{
-					case 0: if (addr != 0) state.heap->decrease_ref(*rcast(void**, addr)); return;
-					case 1: state.heap->decrease_ref(from_mem<void*, true>(state, addr)); return;
-					case 2: state.heap->decrease_ref(from_mem<void*, false>(state, addr)); return;
-				}
-			}
+			if (pop_arg_bits<0, 1>(state))
+				state.heap->increase_ref(pop_memloc<void*>(state));
+			else state.heap->decrease_ref(pop_memloc<void*>(state));
 		}
 
 		forceinline void cst_r(RuntimeState& state)
@@ -608,40 +447,8 @@ namespace kram::runtime
 
 		forceinline void cst_m(RuntimeState& state)
 		{
-			UInt8 pars = pop_arg<UInt8>(state);
-			UInt8 regs = pop_arg<UInt8>(state);
 			UInt8 types = pop_arg<UInt8>(state);
-
-			std::uintptr_t addr = 0;
-			if (test<2>(pars))
-			{
-				switch (bits<3, 2>(pars))
-				{
-					case 0: addr += state.regs.by_index[bits<0, 4>(regs)].u64; break;
-					case 1: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 2; break;
-					case 2: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 4; break;
-					case 3: addr += state.regs.by_index[bits<0, 4>(regs)].u64 * 8; break;
-				}
-			}
-			if (test<5>(pars))
-			{
-				switch (bits<6, 2>(pars))
-				{
-					case 0: addr += pop_arg<UInt8>(state); break;
-					case 1: addr += pop_arg<UInt16>(state); break;
-					case 2: addr += pop_arg<UInt32>(state); break;
-					case 3: addr += pop_arg<UInt64>(state); break;
-				}
-			}
-
-			void* ptr;
-			switch (bits<0, 2>(pars))
-			{
-				case 0: if (addr != 0) ptr = rcast(void*, addr); return;
-				case 1: ptr = from_mem<void*, true>(state, addr); return;
-				case 2: ptr = from_mem<void*, false>(state, addr); return;
-				default: return;
-			}
+			void* ptr = pop_memloc<void*>(state);
 
 			cast_from_to(bits<0, 4>(types), ptr, bits<4, 4>(types), ptr);
 		}

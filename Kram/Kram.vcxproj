@@ -149,9 +149,13 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="src\asm_common.cpp" />
     <ClCompile Include="src\bindata.cpp" />
+    <ClCompile Include="src\bytebuffer.cpp" />
+    <ClCompile Include="src\cperrors.cpp" />
     <ClCompile Include="src\heap.cpp" />
-    <ClCompile Include="src\kram_asm_parser.cpp" />
+    <ClCompile Include="src\asm_parser.cpp" />
+    <ClCompile Include="src\iodata.cpp" />
     <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\native_mem.c" />
     <ClCompile Include="src\opcodes.cpp" />
@@ -159,10 +163,14 @@
     <ClCompile Include="src\vm.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="include\asm_common.h" />
     <ClInclude Include="include\bindata.h" />
+    <ClInclude Include="include\bytebuffer.h" />
     <ClInclude Include="include\common.h" />
+    <ClInclude Include="include\cperrors.h" />
     <ClInclude Include="include\heap.h" />
-    <ClInclude Include="include\kram_asm_parser.h" />
+    <ClInclude Include="include\asm_parser.h" />
+    <ClInclude Include="include\iodata.h" />
     <ClInclude Include="include\native_mem.h" />
     <ClInclude Include="include\opcodes.h" />
     <ClInclude Include="include\runtime.h" />

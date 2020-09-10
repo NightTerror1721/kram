@@ -1,7 +1,9 @@
 #pragma once
 
 #include <type_traits>
+#include <functional>
 #include <algorithm>
+#include <exception>
 #include <iostream>
 #include <sstream>
 #include <utility>
@@ -9,6 +11,8 @@
 #include <cstring>
 #include <vector>
 #include <string>
+#include <array>
+#include <tuple>
 #include <set>
 #include <map>
 #include <bit>
@@ -32,6 +36,7 @@ namespace kram
 	typedef std::int64_t Int64;
 
 	typedef std::size_t Size;
+	typedef std::size_t Offset;
 
 	class KramState;
 	class Heap;
@@ -79,6 +84,8 @@ namespace kram::utils
 		return std::strncpy(dest, source, num);
 	}
 
+	inline std::string to_string(char value) { return std::string(&value, 1); }
+
 	template<unsigned int _BitIdx, unsigned int _BitCount, typename _Ty = UInt8>
 	constexpr _Ty get_bits(_Ty value)
 	{
@@ -104,6 +111,125 @@ namespace kram::utils
 
 	template<typename _Ty>
 	inline void destroy(_Ty& object) { object.~_Ty(); }
+
+	template<typename _Ty>
+	concept boolean = std::same_as<_Ty, bool>;
+
+	template<typename _Ty>
+	inline _Ty* arraycopy_raw(_Ty** dst, const void* src, Size size)
+	{
+		_Ty* array = malloc_raw<_Ty>(size);
+		std::memcpy(array, src, size);
+		return dst ? (*dst = array) : array;
+	}
+
+	template<typename _Ty>
+	inline _Ty* arraycopy_raw(const void* src, Size size) { return arraycopy_raw<_Ty>(nullptr, src, size); }
+
+	template<typename _Ty>
+	_Ty* arraycopy(_Ty** dst, const _Ty* src, Size size)
+	{
+		_Ty* array = malloc_raw<_Ty>(size * sizeof(_Ty));
+		const _Ty *s_ptr = src, *end = src + size;
+		
+		for (_Ty* d_ptr = array; s_ptr < end; ++s_ptr, ++d_ptr)
+			copy<_Ty>(*d_ptr, *s_ptr);
+
+		if (dst)
+			*dst = array;
+		return array;
+	}
+
+	template<typename _Ty>
+	inline _Ty* arraycopy(const _Ty* src, Size size) { return arraycopy<_Ty>(nullptr, src, size); }
+
+	template<typename _Ty>
+	_Ty* arraymove(_Ty** dst, _Ty* src, Size size)
+	{
+		_Ty* array = malloc_raw<_Ty>(size * sizeof(_Ty));
+		const _Ty* end = src + size;
+
+		for (_Ty *d_ptr = array, *s_ptr = src; s_ptr < end; ++s_ptr, ++d_ptr)
+			move<_Ty>(*d_ptr, std::move<_Ty>(*s_ptr));
+
+		if (dst)
+			*dst = array;
+		return array;
+	}
+
+	template<typename _Ty>
+	inline _Ty* arraymove(_Ty* src, Size size) { return arraymove<_Ty>(nullptr, src, size); }
+
+	template<typename _Ty>
+	concept _Type_char = std::same_as<_Ty, char>;
+
+	template<typename _TypeToTest, typename _Ty>
+	inline bool instance_of(const _Ty& value)
+	{
+		try { return dynamic_cast<const _TypeToTest&>(value), true; }
+		catch (const std::bad_cast& ex) { return false; }
+		return false;
+	}
+
+	template<typename _TypeToTest, typename _Ty>
+	inline bool instance_of(const _Ty* value)
+	{
+		return dynamic_cast<const _TypeToTest*>(value) != nullptr;
+	}
+
+	template<typename _TypeToTest, typename _Ty>
+	bool instance_of_then_do(const _Ty& value, const std::function<void(const _TypeToTest&)>& action)
+	{
+		try
+		{
+			action(dynamic_cast<const _TypeToTest&>(value));
+			return true;
+		}
+		catch (const std::bad_cast&) { return false; }
+		return false;
+	}
+
+	template<typename _TypeToTest, typename _Ty>
+	bool instance_of_then_do(_Ty& value, const std::function<void(_TypeToTest&)>& action)
+	{
+		try
+		{
+			action(dynamic_cast<_TypeToTest&>(value));
+			return true;
+		}
+		catch (const std::bad_cast& ex) { return false; }
+		return false;
+	}
+
+	template<typename _TypeToTest, typename _Ty>
+	bool instance_of_then_do(_Ty* value, const std::function<void(_TypeToTest*)>& action)
+	{
+		_TypeToTest* ptr = dynamic_cast<_TypeToTest*>(value);
+		if (ptr)
+			return action(ptr), true;
+		return false;
+	}
+
+	template<typename _TypeToTest, typename _Ty>
+	bool instance_of_then_do(const _Ty* value, const std::function<void(const _TypeToTest*)>& action)
+	{
+		const _TypeToTest* ptr = dynamic_cast<const _TypeToTest*>(value);
+		if (ptr)
+			return action(ptr), true;
+		return false;
+	}
+
+	template<std::integral _Ty>
+	constexpr _Ty hex_unit_to_integer(char unit, unsigned int offset = 0)
+	{
+		if (unit >= '0' && unit <= '9')
+			return static_cast<_Ty>(unit - '0') << (offset * 4);
+		if (unit >= 'a' && unit <= 'f')
+			return static_cast<_Ty>(unit - 'a') << (offset * 4);
+		if (unit >= 'A' && unit <= 'F')
+			return static_cast<_Ty>(unit - 'A') << (offset * 4);
+		return 0;
+	}
 }
 
 #define CONCAT_MACROS(_A, _B) _A ## _B

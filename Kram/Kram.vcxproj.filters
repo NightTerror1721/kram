@@ -36,9 +36,6 @@
     <ClCompile Include="src\main.cpp">
       <Filter>Archivos de origen</Filter>
     </ClCompile>
-    <ClCompile Include="src\kram_asm_parser.cpp">
-      <Filter>Archivos de origen\kram asm</Filter>
-    </ClCompile>
     <ClCompile Include="src\vm.cpp">
       <Filter>Archivos de origen\vm</Filter>
     </ClCompile>
@@ -57,11 +54,23 @@
     <ClCompile Include="src\runtime.cpp">
       <Filter>Archivos de origen\vm</Filter>
     </ClCompile>
+    <ClCompile Include="src\asm_parser.cpp">
+      <Filter>Archivos de origen\kram asm</Filter>
+    </ClCompile>
+    <ClCompile Include="src\asm_common.cpp">
+      <Filter>Archivos de origen\kram asm</Filter>
+    </ClCompile>
+    <ClCompile Include="src\iodata.cpp">
+      <Filter>Archivos de origen\utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\bytebuffer.cpp">
+      <Filter>Archivos de origen\utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\cperrors.cpp">
+      <Filter>Archivos de origen\utils</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="include\kram_asm_parser.h">
-      <Filter>Archivos de encabezado\kram asm</Filter>
-    </ClInclude>
     <ClInclude Include="include\vm.h">
       <Filter>Archivos de encabezado\vm</Filter>
     </ClInclude>
@@ -85,6 +94,21 @@
     </ClInclude>
     <ClInclude Include="include\runtime.h">
       <Filter>Archivos de encabezado\vm</Filter>
+    </ClInclude>
+    <ClInclude Include="include\asm_parser.h">
+      <Filter>Archivos de encabezado\kram asm</Filter>
+    </ClInclude>
+    <ClInclude Include="include\asm_common.h">
+      <Filter>Archivos de encabezado\kram asm</Filter>
+    </ClInclude>
+    <ClInclude Include="include\iodata.h">
+      <Filter>Archivos de encabezado\utils</Filter>
+    </ClInclude>
+    <ClInclude Include="include\bytebuffer.h">
+      <Filter>Archivos de encabezado\utils</Filter>
+    </ClInclude>
+    <ClInclude Include="include\cperrors.h">
+      <Filter>Archivos de encabezado\utils</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
